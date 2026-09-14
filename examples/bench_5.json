@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "name": "bench_5",
+  "robot_base_frame": "yam_base_link",
+  "source": {
+    "method": "hand_authored",
+    "note": "Milestone one. No video, no reconstruction. Every dimension comes from a catalog template, so the scene is metric by construction and needs no scale reference. A video-derived scene DOES need one -- see marker_config below.",
+    "marker_config": "not_applicable_hand_authored",
+    "video": "none",
+    "git_sha": "8f5af670d3bcb4c63b2289614c97fad5d89b8aef",
+    "frame_convention": "Robot base at the origin. Bench top surface at z=0, so the arm mounts flush to it. Bench extends in +y, in front of the robot.",
+    "composition_rationale": "Chosen for collider coverage rather than object variety: box (static + dynamic) and sdf (normal, small-feature, and extreme-aspect-ratio). convex_decomposition is deliberately NOT covered here -- see known_gaps."
+  },
+  "objects": [
+    {
+      "instance_id": "bench",
+      "catalog_key": "bench_top",
+      "position": [0.0, 0.3, -0.04],
+      "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+      "fixed": true,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "Static fixture. Sunk by its own 0.04 m thickness so its top surface lands exactly at z=0, the robot base plane. MATTERIX names sim/real table size mismatch as a direct cause of a real-world failure, so this is the first dimension to measure on the real bench."
+    },
+    {
+      "instance_id": "hotplate",
+      "catalog_key": "hotplate_stirrer",
+      "position": [-0.28, 0.3, 0.0],
+      "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+      "fixed": false,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "Dynamic box. Carries plate_center at (0, -0.045, 0.105), a keypoint that is NOT at the prim origin -- which is the case that catches an emitter writing keypoints relative to the wrong frame."
+    },
+    {
+      "instance_id": "beaker",
+      "catalog_key": "beaker_250",
+      "position": [-0.05, 0.28, 0.0],
+      "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+      "fixed": false,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "SDF collider, 70 x 95 mm. The only vessel in the catalog whose dimensions survived review unchanged."
+    },
+    {
+      "instance_id": "test_tube",
+      "catalog_key": "test_tube_16x100",
+      "position": [0.1, 0.25, 0.0],
+      "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+      "fixed": false,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "SDF with small features: a 1 mm wall and a 14 mm cavity stress SDF resolution. Also free-standing at a 6.25:1 aspect ratio, so it tips past 9 degrees of lean -- expect this to be the object that moves first if the T3 settle test ever fails."
+    },
+    {
+      "instance_id": "petri",
+      "catalog_key": "petri_dish_100",
+      "position": [0.25, 0.32, 0.0],
+      "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+      "fixed": false,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "SDF at an extreme aspect ratio: 100 mm wide by 15 mm tall, with a 1.2 mm wall. A uniform-resolution SDF that is fine for the beaker can under-resolve this lid-less dish entirely."
+    }
+  ]
+}

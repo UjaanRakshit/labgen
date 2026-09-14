@@ -43,9 +43,9 @@ this pipeline feeds a system that will eventually produce trust numbers.
 | module            | contract                                          | task |
 | ----------------- | ------------------------------------------------- | ---- |
 | `catalog.py`      | parametric lab object templates (dims, mass, collider) | — |
-| `types.py`        | the artifacts stages pass between each other      | T0 |
-| `meshes.py`       | `CatalogItem` → watertight triangle mesh (OBJ)    | T1 |
-| `usda.py`         | `SceneSpec` → `.usda` with UsdPhysics schemas     | T2 |
+| `types.py`        | the artifacts stages pass between each other      | T0 ✅ |
+| `meshes.py`       | `CatalogItem` → watertight triangle mesh (OBJ)    | T1 ✅ |
+| `usda.py`         | `SceneSpec` → `.usda` with UsdPhysics schemas     | T2 ✅ |
 | `validate.py`     | the gates, including the settle test              | T3 |
 | `isaaclab_cfg.py` | `SceneSpec` → `InteractiveSceneCfg`               | T4 |
 | `register.py`     | reconstruction frame → robot base frame           | T5 |
@@ -60,6 +60,55 @@ until its validator passes.
 `SceneSpec` is JSON and is meant to be edited by hand when the pipeline gets
 something wrong. That round-trip is a feature, not a debugging escape hatch, so
 loading is strict — an unknown key is an error rather than a shrug.
+
+## Two checks, never one
+
+Any check that compares generated geometry against a catalog number is split in
+two, and new ones must be too:
+
+1. **generated vs analytic** — is the mesh code correct for the given
+   dimensions? Tight tolerance; the only error source is polygonal
+   approximation.
+2. **catalog number vs physical plausibility** — are the dimensions themselves
+   right? A loose, shape-dependent band.
+
+"We have a bug" and "the seed data is bad" have completely different fixes, and
+a conflated check reports the same failure for both. Splitting T1's
+cavity-volume criterion this way is what showed the mesh code was correct and
+five catalog dimensions were not.
+
+## Provenance: `verified` means sourced
+
+`CatalogItem.verified` means a named spec sheet, part number, or measurement
+exists — recorded in `CatalogItem.source`. It does **not** mean the author felt
+confident, and `verified=True` without a source raises. A `source` starting with
+`TODO` is the absence of provenance, written down.
+
+A flag that tracks confidence is set by the same process that produces the wrong
+number, so it marks bad entries as good. The seed catalog shipped five wrong
+dimensions all flagged `verified=True`. Every entry is currently `verified=False`
+with a `source` naming what needs checking.
+
+## Known gaps
+
+Things that are **not** covered, recorded so a later stage does not assume they
+are:
+
+- **`bench_5` does not exercise `convex_decomposition`.** It covers `box`
+  (static and dynamic) and `sdf` (normal, small-feature, and extreme aspect
+  ratio). Both racks build, but both have unsourced footprints, so neither
+  belongs in the reference scene yet. T3's collider checks are untested against
+  a decomposed collider.
+- **"Opens in Isaac Lab without error" is unverified.** Isaac Lab is Linux-only
+  and this suite runs without a GPU or `pxr`. `tests/test_usda.py` checks the
+  emitted stage structurally — balanced scopes, stage metadata, and every
+  physics invariant — but a green run is not a load test.
+- **The three vials are modelled as straight cylinders.** They need
+  `necked_vessel`, whose builder exists and is tested, but converting them
+  requires shoulder and neck dimensions nobody has sourced. The volume overshoot
+  is the visible symptom; the real cost is that a gripper closes on a neck that
+  is not in the mesh.
+- **No catalog entry is sourced.** See above.
 
 ## Conventions
 
