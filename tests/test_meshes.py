@@ -19,12 +19,13 @@ from labgen.meshes import Mesh, MeshError
 HOLLOW = {"open_vessel", "conical_vessel"}
 
 # Catalog entries whose *dimensions* are self-inconsistent, so no mesh can be
-# built from them. Each is `verified=False` and each is a catalog bug, not a
-# mesh bug. Listed explicitly so the suite stays green while still failing the
-# moment a new entry breaks -- and so the list cannot grow silently.
-KNOWN_BAD_DIMS = {
-    "vial_rack_5x10_20ml": "hole_d 0.030 m cannot fit a 0.024 m grid pitch",
-}
+# built from them. Empty, and it should stay that way: an entry landing here is
+# a catalog bug, not a mesh bug, and the refusal path itself is tested against
+# synthetic dims below so this list is never load-bearing for coverage.
+#
+# vial_rack_5x10_20ml lived here until its footprint was corrected from 240x120
+# (30 mm holes on a 24 mm pitch -- impossible) to 320x160.
+KNOWN_BAD_DIMS: dict[str, str] = {}
 
 BUILDABLE = sorted(set(CATALOG) - set(KNOWN_BAD_DIMS))
 
@@ -236,20 +237,30 @@ def test_capacity_ratio_report(capsys):
     assert rows
 
 
-# --- known catalog dimension errors --------------------------------------
+# --- impossible dimensions must be refused, not worked around ------------
 
-@pytest.mark.parametrize("key", sorted(KNOWN_BAD_DIMS))
-def test_known_bad_dims_fail_loudly_and_say_why(key):
-    """These must keep failing, with a message that names the real problem.
+def test_overlapping_holes_are_refused_with_a_useful_message():
+    """The footprint that vial_rack_5x10_20ml originally shipped with.
+
+    Tested against synthetic dims rather than a catalog entry on purpose: a
+    test that depends on the catalog staying broken stops testing anything the
+    moment someone fixes it, which is exactly what happened here.
 
     If someone 'fixes' the builder to tolerate overlapping holes, this catches
     it. The rack would then build, look right, and accept no real vial.
     """
+    impossible = {"x": 0.240, "y": 0.120, "z": 0.030,
+                  "hole_d": 0.030, "hole_depth": 0.022, "rows": 5, "cols": 10}
     with pytest.raises(MeshError) as exc:
-        meshes.build(CATALOG[key])
+        meshes.build_tube_rack(impossible, 16, "overlapping")
     msg = str(exc.value)
-    assert "catalog dimension error" in msg, f"{key}: unhelpful message: {msg}"
+    assert "catalog dimension error" in msg, f"unhelpful message: {msg}"
     assert "do not shrink" in msg
+
+
+def test_every_catalog_entry_currently_builds():
+    """Complements KNOWN_BAD_DIMS being empty: prove it, do not assume it."""
+    assert set(meshes.build_all()) == set(CATALOG)
 
 
 # --- tube racks have real holes -----------------------------------------
@@ -379,11 +390,138 @@ def test_build_all_covers_every_buildable_item():
 
 
 def test_build_all_raises_by_default_on_a_broken_entry():
-    """Reporting may skip a broken entry; a scene build must never silently."""
-    with pytest.raises(MeshError):
-        meshes.build_all()
+    """Reporting may skip a broken entry; a scene build must never silently.
+
+    Injects a broken entry rather than relying on one existing, so the
+    guarantee stays tested once the catalog is clean.
+    """
+    import dataclasses
+
+    broken = dataclasses.replace(
+        CATALOG["test_tube_rack_6x12"],
+        key="broken_rack",
+        dims={**CATALOG["test_tube_rack_6x12"].dims, "hole_d": 0.5},
+    )
+    original = dict(meshes.CATALOG)
+    meshes.CATALOG["broken_rack"] = broken
+    try:
+        with pytest.raises(MeshError):
+            meshes.build_all()
+        assert "broken_rack" not in meshes.build_all(skip_unbuildable=True)
+    finally:
+        meshes.CATALOG.clear()
+        meshes.CATALOG.update(original)
 
 
 def test_build_rejects_an_unknown_key():
     with pytest.raises(MeshError, match="not a catalog key"):
         meshes.build("beaker_9000")
+
+
+# --- necked vessels ------------------------------------------------------
+#
+# The shape kind exists and is tested; no catalog entry uses it yet. The three
+# vials that need it (vial_2ml, vial_20ml, vial_40ml) are blocked on shoulder
+# and neck dimensions nobody has sourced, and inventing them is exactly what
+# CLAUDE.md forbids. Their `source` strings say so.
+
+# A 20 mL scintillation vial's real OD and height, with a plausible neck, used
+# here to exercise the builder. NOT catalog data -- body_height is made up, and
+# that is precisely why it lives in a test and not in catalog.py.
+VIAL_20ML_SHAPED = {
+    "outer_d": 0.028, "height": 0.061, "wall": 0.0012,
+    "body_height": 0.042, "neck_d": 0.022, "neck_height": 0.010,
+}
+
+
+def _necked(**overrides):
+    dims = dict(VIAL_20ML_SHAPED)
+    dims.update(overrides)
+    return meshes.build_necked_vessel(dims, 64, "necked_test")
+
+
+def test_necked_vessel_is_sound():
+    mesh = _necked()
+    assert mesh.is_manifold
+    assert len(mesh.degenerate_faces()) == 0
+    assert mesh.volume_m3() > 0
+    lo, hi = mesh.bounds()
+    assert lo[2] == pytest.approx(0.0, abs=1e-12)
+    assert hi[2] == pytest.approx(VIAL_20ML_SHAPED["height"], rel=1e-9)
+
+
+def test_necked_vessel_actually_has_a_neck():
+    """The point of the shape kind.
+
+    Measure the mesh radius at neck height and at body height. If they are the
+    same, this is a straight cylinder wearing a different shape name and every
+    grasp planned against it closes on geometry that is not there.
+    """
+    mesh = _necked()
+    v = mesh.vertices
+    d = VIAL_20ML_SHAPED
+
+    def radius_at(z):
+        # Sample where the profile actually has vertices. The body is a
+        # straight wall, so it carries vertices only at its ends -- picking a z
+        # mid-wall finds nothing.
+        near = v[np.abs(v[:, 2] - z) < 1e-9]
+        assert len(near), f"no vertices at z={z}"
+        return float(np.max(np.hypot(near[:, 0], near[:, 1])))
+
+    body_r = radius_at(d["body_height"])          # top of the cylindrical body
+    neck_r = radius_at(d["height"])               # the rim, at the top of the neck
+
+    assert body_r == pytest.approx(d["outer_d"] / 2, rel=0.002)
+    assert neck_r == pytest.approx(d["neck_d"] / 2, rel=0.002)
+    assert neck_r < body_r * 0.9, (
+        f"neck radius {neck_r:.4f} m is not meaningfully narrower than the body "
+        f"{body_r:.4f} m -- a gripper would find no neck to close on"
+    )
+
+
+def test_necked_vessel_cavity_is_real():
+    mesh = _necked()
+    d = VIAL_20ML_SHAPED
+    inner_r = d["neck_d"] / 2 - d["wall"]
+    crossings = mesh.ray_crossings_z(inner_r * 0.3, inner_r * 0.1)
+    assert len(crossings) == 2
+    assert crossings[0] == pytest.approx(0.0, abs=1e-9)
+    assert crossings[1] == pytest.approx(d["wall"], rel=0.02)
+
+
+def test_necked_vessel_holds_less_than_a_straight_cylinder():
+    """The volume symptom that pointed at the shape gap in the first place."""
+    d = VIAL_20ML_SHAPED
+    necked = _necked().volume_m3()
+    straight = meshes.build_open_vessel(
+        {"outer_d": d["outer_d"], "height": d["height"], "wall": d["wall"]},
+        64, "straight").volume_m3()
+    # Glass volume differs; what matters is the cavity. Compare envelopes.
+    assert necked < straight * 1.5
+    body_only = math.pi * (d["outer_d"] / 2) ** 2 * d["height"]
+    assert necked < body_only
+
+
+def test_necked_vessel_rejects_a_neck_that_is_not_narrower():
+    with pytest.raises(MeshError, match="not narrower"):
+        _necked(neck_d=0.028)
+
+
+def test_necked_vessel_rejects_a_body_that_swallows_the_shoulder():
+    with pytest.raises(MeshError, match="no room for a shoulder"):
+        _necked(body_height=0.055)
+
+
+def test_necked_vessel_rejects_a_wall_that_seals_the_neck():
+    with pytest.raises(MeshError, match="closes off"):
+        _necked(wall=0.012)
+
+
+def test_no_catalog_entry_claims_necked_vessel_without_dims():
+    """Guard the conversion when it happens: the dims must arrive with it."""
+    for key, item in CATALOG.items():
+        if item.shape == "necked_vessel":
+            missing = {"outer_d", "height", "wall", "body_height",
+                       "neck_d", "neck_height"} - set(item.dims)
+            assert not missing, f"{key} is necked_vessel but lacks {sorted(missing)}"

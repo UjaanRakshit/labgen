@@ -17,6 +17,7 @@ OPEN_SHAPES = {"open_vessel", "conical_vessel"}
 # catalog.py. meshes.py (T1) reads exactly these.
 REQUIRED_DIMS: dict[str, set[str]] = {
     "open_vessel": {"outer_d", "height", "wall", "base_d"},
+    "necked_vessel": {"outer_d", "height", "wall", "body_height", "neck_d", "neck_height"},
     "conical_vessel": {"base_d", "neck_d", "height", "neck_height", "wall"},
     "solid_cylinder": {"outer_d", "height"},
     "box": {"x", "y", "z"},
@@ -135,6 +136,54 @@ def test_capacity_is_consistent_with_geometry(key: str):
     )
 
 
+# --- provenance ----------------------------------------------------------
+
+def test_verified_requires_a_real_source():
+    """`verified` means sourced, not confident.
+
+    Those are different claims and only the first is worth anything: a flag
+    that tracks confidence is set by the same process that produced the wrong
+    number, so it marks bad entries as good. That is precisely how the seed
+    catalog ended up with five wrong dimensions all flagged verified=True.
+    """
+    from labgen.catalog import GLASS
+
+    with pytest.raises(ValueError, match="verified=True requires"):
+        CatalogItem(key="ghost", display_name="unsourced", shape="box",
+                    collider="box", material=GLASS, mass_kg=1.0,
+                    dims={"x": 0.1, "y": 0.1, "z": 0.1}, verified=True)
+
+
+def test_a_todo_does_not_count_as_a_source():
+    """A TODO is the absence of a source, written down."""
+    from labgen.catalog import GLASS
+
+    with pytest.raises(ValueError, match="verified=True requires"):
+        CatalogItem(key="ghost", display_name="unsourced", shape="box",
+                    collider="box", material=GLASS, mass_kg=1.0,
+                    dims={"x": 0.1, "y": 0.1, "z": 0.1},
+                    source="TODO: look this up", verified=True)
+
+
+def test_a_real_source_permits_verified():
+    from labgen.catalog import GLASS
+
+    item = CatalogItem(key="real", display_name="sourced", shape="box",
+                       collider="box", material=GLASS, mass_kg=1.0,
+                       dims={"x": 0.1, "y": 0.1, "z": 0.1},
+                       source="Corning 1000-250, catalog p.42", verified=True)
+    assert item.verified
+
+
+@pytest.mark.parametrize("key", sorted(CATALOG))
+def test_every_entry_says_where_its_numbers_came_from(key: str):
+    """Even an unverified entry must name what needs checking."""
+    assert CATALOG[key].source.strip(), (
+        f"{key} has no `source`. An entry with no provenance cannot be "
+        f"audited, and it is indistinguishable from one that was measured."
+    )
+
+
 def test_unverified_items_are_visible():
     """Not a failure -- a standing inventory of what still needs a spec sheet.
 
@@ -190,3 +239,31 @@ def test_to_dict_is_json_ready():
     item: CatalogItem = CATALOG["beaker_250"]
     blob = json.dumps(item.to_dict())
     assert '"glass"' in blob
+
+
+# --- census --------------------------------------------------------------
+
+def test_collider_census_is_pinned():
+    """Pin the shape of the catalog so nothing drops out of iteration silently.
+
+    A catalog entry that quietly stops being enumerated -- by a filter that
+    excludes it, a dict comprehension that swallows an exception, a shape kind
+    with no builder -- does not fail anywhere. It just stops being in the
+    scene, and the first place you notice is a validator in T3 reporting a
+    clean bench that is missing an object.
+
+    Update these numbers deliberately when the catalog changes. Do not adjust
+    them to make a run go green.
+    """
+    from collections import Counter
+
+    by_collider = Counter(i.collider for i in CATALOG.values())
+    assert dict(by_collider) == {"sdf": 12, "box": 3, "convex_decomposition": 2}
+    assert sum(by_collider.values()) == len(CATALOG) == 17
+
+
+def test_every_item_has_a_builder_and_is_reachable():
+    """Every key round-trips through resolution and has a known shape family."""
+    for key, item in CATALOG.items():
+        assert item.shape in REQUIRED_DIMS, f"{key}: shape {item.shape!r} has no dims contract"
+        assert catalog.resolve(key) is item, f"{key} is not reachable by its own key"

@@ -24,7 +24,14 @@ from typing import Literal
 ColliderKind = Literal["sdf", "convex_hull", "convex_decomposition", "box", "cylinder"]
 
 # Shape families the mesh generator knows how to build.
-ShapeKind = Literal["open_vessel", "conical_vessel", "solid_cylinder", "box", "tube_rack"]
+#
+# `necked_vessel` is separate from `open_vessel` for a reason that matters more
+# than the volume error it fixes: a scintillation or EPA vial has a shoulder
+# that tapers to a cap thread, and a policy grasping one grasps that neck. Model
+# it as a straight cylinder and the grasp geometry is wrong at exactly the point
+# the gripper closes -- the overestimated cavity is the symptom, not the problem.
+ShapeKind = Literal["open_vessel", "necked_vessel", "conical_vessel",
+                    "solid_cylinder", "box", "tube_rack"]
 
 
 @dataclass(frozen=True)
@@ -72,8 +79,32 @@ class CatalogItem:
     keypoints: dict[str, tuple[float, float, float]] = field(default_factory=dict)
 
     capacity_ml: float | None = None
+
+    # Where the numbers came from: a manufacturer part number, a spec sheet
+    # URL, or a note naming who measured the physical object and when.
+    #
+    # `verified` means "sourced", NOT "whoever typed this was confident". Those
+    # are different claims and only the first one is worth anything downstream:
+    # a flag that tracks confidence gets set by the same process that produces
+    # the wrong number, so it marks bad entries as good. A prefix of TODO does
+    # not count as a source -- it is the absence of one, written down.
+    source: str = ""
     verified: bool = False
     aliases: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.verified and not self._is_sourced():
+            raise ValueError(
+                f"{self.key}: verified=True requires `source` to name a "
+                f"manufacturer part number, a spec sheet, or a measurement. "
+                f"Got {self.source!r}. An unsourced 'verified' entry is the "
+                f"failure this field exists to prevent -- it marks a guess as "
+                f"a fact, and every downstream scale check then trusts it."
+            )
+
+    def _is_sourced(self) -> bool:
+        src = self.source.strip()
+        return bool(src) and not src.upper().startswith("TODO")
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -81,7 +112,12 @@ class CatalogItem:
         return d
 
 
-def _beaker(key, name, cap_ml, outer_d, height, mass, aliases=()):
+def _sourced(source: str) -> bool:
+    src = source.strip()
+    return bool(src) and not src.upper().startswith("TODO")
+
+
+def _beaker(key, name, cap_ml, outer_d, height, mass, aliases=(), source=""):
     """Griffin low-form beaker. Rim keypoint is where a gripper closes."""
     return CatalogItem(
         key=key,
@@ -99,12 +135,13 @@ def _beaker(key, name, cap_ml, outer_d, height, mass, aliases=()):
             "fill_point": (0.0, 0.0, height * 0.25),
         },
         capacity_ml=cap_ml,
-        verified=True,
+        source=source,
+        verified=_sourced(source),
         aliases=aliases,
     )
 
 
-def _vial(key, name, cap_ml, outer_d, height, mass, aliases=()):
+def _vial(key, name, cap_ml, outer_d, height, mass, aliases=(), source=""):
     return CatalogItem(
         key=key,
         display_name=name,
@@ -120,7 +157,8 @@ def _vial(key, name, cap_ml, outer_d, height, mass, aliases=()):
             "fill_point": (0.0, 0.0, height * 0.3),
         },
         capacity_ml=cap_ml,
-        verified=True,
+        source=source,
+        verified=_sourced(source),
         aliases=aliases,
     )
 
@@ -133,19 +171,39 @@ def _register(item: CatalogItem) -> None:
 
 
 # --- Beakers (Griffin low form, borosilicate 3.3) -------------------------
-_register(_beaker("beaker_50", "50 mL Griffin beaker", 50, 0.038, 0.055, 0.025))
-_register(_beaker("beaker_100", "100 mL Griffin beaker", 100, 0.050, 0.070, 0.055))
+# beaker_50 was 0.038 x 0.055, which made it brim-full at its rated 50 mL --
+# no Griffin beaker is graduated to its rim. Corrected to 42 x 60 mm on the
+# project owner's say-so (2026-09-14); that lifts its brim ratio to 1.40 and
+# into line with the family. Still TODO, because a correction from memory is
+# not a spec sheet, which is exactly what `source` exists to distinguish.
+_register(_beaker("beaker_50", "50 mL Griffin beaker", 50, 0.042, 0.060, 0.025,
+                  source="TODO: source the whole Griffin family from one named spec sheet (e.g. Pyrex 1000 series). See the capacity report in tests/test_meshes.py. Dims corrected 2026-09-14, unsourced."))
+_register(_beaker("beaker_100", "100 mL Griffin beaker", 100, 0.050, 0.070, 0.055,
+                  source="TODO: source the whole Griffin family from one named spec sheet (e.g. Pyrex 1000 series). See the capacity report in tests/test_meshes.py. Low brim ratio (1.19); check this one first."))
 _register(_beaker("beaker_250", "250 mL Griffin beaker", 250, 0.070, 0.095, 0.100,
-                  aliases=("beaker", "250ml beaker", "glass beaker")))
-_register(_beaker("beaker_500", "500 mL Griffin beaker", 500, 0.085, 0.120, 0.180))
-_register(_beaker("beaker_1000", "1 L Griffin beaker", 1000, 0.105, 0.145, 0.320))
+                  aliases=("beaker", "250ml beaker", "glass beaker"),
+                  source="TODO: source the whole Griffin family from one named spec sheet (e.g. Pyrex 1000 series). See the capacity report in tests/test_meshes.py."))
+_register(_beaker("beaker_500", "500 mL Griffin beaker", 500, 0.085, 0.120, 0.180,
+                  source="TODO: source the whole Griffin family from one named spec sheet (e.g. Pyrex 1000 series). See the capacity report in tests/test_meshes.py."))
+_register(_beaker("beaker_1000", "1 L Griffin beaker", 1000, 0.105, 0.145, 0.320,
+                  source="TODO: source the whole Griffin family from one named spec sheet (e.g. Pyrex 1000 series). See the capacity report in tests/test_meshes.py. Low brim ratio (1.17); check with beaker_100."))
 
 # --- Vials ----------------------------------------------------------------
+# All three are shape-model gaps, not dimension errors. 28 x 61 mm is the real
+# standard for a 20 mL scintillation vial; what is missing is the shoulder that
+# tapers to the ~22 mm cap neck. The volume overshoot is the visible symptom,
+# the grasp geometry is the actual cost -- a gripper closes on that neck, and
+# there is no neck in a straight-walled cylinder. Converting these needs
+# shoulder and neck numbers the project does not have yet. See `necked_vessel`.
 _register(_vial("vial_2ml", "2 mL HPLC vial", 2, 0.012, 0.032, 0.004,
-                aliases=("hplc vial", "autosampler vial")))
+                aliases=("hplc vial", "autosampler vial"),
+                source="TODO: needs necked_vessel dims (shoulder + neck), not just OD/height. Modelled as a straight cylinder, which overstates the cavity and, worse, omits the neck a gripper actually closes on."))
 _register(_vial("vial_20ml", "20 mL scintillation vial", 20, 0.028, 0.061, 0.013,
-                aliases=("vial", "scintillation vial")))
-_register(_vial("vial_40ml", "40 mL EPA vial", 40, 0.028, 0.095, 0.020))
+                aliases=("vial", "scintillation vial"),
+                source="TODO: needs necked_vessel dims (shoulder + neck), not just OD/height. Modelled as a straight cylinder, which overstates the cavity and, worse, omits the neck a gripper actually closes on. OD/height confirmed 2026-09-14; "
+                       "neck ~22 mm, shoulder height unknown."))
+_register(_vial("vial_40ml", "40 mL EPA vial", 40, 0.028, 0.095, 0.020,
+                source="TODO: needs necked_vessel dims (shoulder + neck), not just OD/height. Modelled as a straight cylinder, which overstates the cavity and, worse, omits the neck a gripper actually closes on."))
 
 # --- Erlenmeyer -----------------------------------------------------------
 _register(CatalogItem(
@@ -164,7 +222,8 @@ _register(CatalogItem(
         "fill_point": (0.0, 0.0, 0.030),
     },
     capacity_ml=250,
-    verified=True,
+    source="TODO: confirm body/neck geometry against a named Erlenmeyer spec sheet",
+    verified=False,
     aliases=("erlenmeyer", "conical flask", "flask"),
 ))
 
@@ -184,7 +243,8 @@ _register(CatalogItem(
         "fill_point": (0.0, 0.0, 0.060),
     },
     capacity_ml=100,
-    verified=True,
+    source="TODO: confirm column and foot diameters against a spec sheet",
+    verified=False,
     aliases=("graduated cylinder", "measuring cylinder"),
 ))
 
@@ -203,7 +263,8 @@ _register(CatalogItem(
         "fill_point": (0.0, 0.0, 0.030),
     },
     capacity_ml=14,
-    verified=True,
+    source="TODO: 16x100 is nominal; confirm wall, and whether the base is round-bottom",
+    verified=False,
     aliases=("test tube",),
 ))
 
@@ -215,9 +276,14 @@ _register(CatalogItem(
     collider="convex_decomposition",
     material=PLASTIC,
     mass_kg=0.210,
-    dims={"x": 0.240, "y": 0.120, "z": 0.030,
+    # Was 0.240 x 0.120, which put 30 mm holes on a 24 mm pitch -- physically
+    # impossible, and meshes.py refused to build it. 28 mm vials need roughly a
+    # 32 mm pitch, so a 5x10 rack is nearer 320 x 160 mm.
+    dims={"x": 0.320, "y": 0.160, "z": 0.030,
           "hole_d": 0.030, "hole_depth": 0.022, "rows": 5, "cols": 10},
     keypoints={"base_center": (0.0, 0.0, 0.0)},
+    source="TODO: footprint derived 2026-09-14 from the vial pitch, not measured. "
+           "Needs a manufacturer part number before any scene uses it.",
     verified=False,
     aliases=("vial rack", "rack"),
 ))
@@ -232,6 +298,7 @@ _register(CatalogItem(
     dims={"x": 0.230, "y": 0.110, "z": 0.028,
           "hole_d": 0.018, "hole_depth": 0.020, "rows": 6, "cols": 12},
     keypoints={"base_center": (0.0, 0.0, 0.0)},
+    source="TODO: confirm footprint and hole pitch against a part number",
     verified=False,
     aliases=("test tube rack",),
 ))
@@ -249,6 +316,8 @@ _register(CatalogItem(
         "plate_center": (0.0, -0.045, 0.105),
         "base_center": (0.0, 0.0, 0.0),
     },
+    source="TODO: IKA RCT-class is a family, not a part. Pick the model and "
+           "confirm its footprint and plate height",
     verified=False,
     aliases=("hotplate", "hot plate", "stirrer", "ika"),
 ))
@@ -265,6 +334,7 @@ _register(CatalogItem(
         "pan_center": (0.0, -0.060, 0.090),
         "base_center": (0.0, 0.0, 0.0),
     },
+    source="TODO: no model chosen; footprint and pan height are placeholders",
     verified=False,
     aliases=("balance", "scale", "weighing scale"),
 ))
@@ -278,7 +348,8 @@ _register(CatalogItem(
     mass_kg=0.016,
     dims={"outer_d": 0.100, "height": 0.015, "wall": 0.0012, "base_d": 0.100},
     keypoints={"rim_grasp": (0.0, 0.0, 0.012), "base_center": (0.0, 0.0, 0.0)},
-    verified=True,
+    source="TODO: confirm base vs lid height; this models the base only",
+    verified=False,
     aliases=("petri dish", "petri"),
 ))
 
@@ -292,6 +363,8 @@ _register(CatalogItem(
     mass_kg=0.0,  # static
     dims={"x": 1.500, "y": 0.750, "z": 0.040},
     keypoints={"surface_center": (0.0, 0.0, 0.040)},
+    source="TODO: measure the real bench. MATTERIX names sim/real table size "
+           "mismatch as a direct cause of a real-world failure",
     verified=False,
     aliases=("bench", "table", "benchtop", "tabletop"),
 ))

@@ -39,6 +39,7 @@ __all__ = [
     "revolve",
     "build",
     "build_collision",
+    "build_necked_vessel",
     "build_all",
     "cavity_volume_m3",
 ]
@@ -332,6 +333,62 @@ def build_open_vessel(dims: dict, segments: int, name: str) -> Mesh:
     )
 
 
+def build_necked_vessel(dims: dict, segments: int, name: str) -> Mesh:
+    """Vial: cylindrical body, shoulder taper, narrower neck, open top.
+
+    Distinct from `conical_vessel` (which tapers from the base, Erlenmeyer
+    style) and from `open_vessel` (straight walls all the way up).
+
+    The reason this shape exists is the neck, not the volume. A scintillation
+    vial's cavity modelled as a straight cylinder is roughly 50% too big, which
+    is visible and annoying; but a gripper closing on such a vial closes on the
+    neck, and a straight-walled mesh has no neck for it to close on. The grasp
+    is then wrong at exactly the contact the task depends on, and no volume
+    check anywhere would catch it.
+
+    dims: outer_d, height, wall, body_height, neck_d, neck_height
+    The shoulder occupies whatever is left between `body_height` and
+    `height - neck_height`, so it is derived rather than being a sixth number
+    that can disagree with the other five.
+    """
+    outer_r = dims["outer_d"] / 2.0
+    neck_r = dims["neck_d"] / 2.0
+    height = dims["height"]
+    body_h = dims["body_height"]
+    neck_h = dims["neck_height"]
+    wall = dims["wall"]
+
+    neck_base_z = height - neck_h
+    if neck_r >= outer_r:
+        raise MeshError(
+            f"{name}: neck_d {dims['neck_d']} m is not narrower than outer_d "
+            f"{dims['outer_d']} m. That is an open_vessel, not a necked one."
+        )
+    if body_h >= neck_base_z:
+        raise MeshError(
+            f"{name}: body_height {body_h} m leaves no room for a shoulder below "
+            f"the neck, which starts at {neck_base_z} m."
+        )
+    if neck_r - wall <= 0:
+        raise MeshError(f"{name}: wall {wall} m closes off a {dims['neck_d']} m neck")
+    if body_h <= wall:
+        raise MeshError(f"{name}: body_height {body_h} m is below the floor thickness")
+
+    profile = [
+        (outer_r, 0.0),                   # up the outside: body
+        (outer_r, body_h),
+        (neck_r, neck_base_z),            #   shoulder taper
+        (neck_r, height),                 #   up the neck
+        (neck_r - wall, height),          # across the rim
+        (neck_r - wall, neck_base_z),     # down the inside: neck
+        (outer_r - wall, body_h),         #   shoulder
+        (outer_r - wall, wall),           #   body
+        (0.0, wall),                      # across the cavity floor
+        (0.0, 0.0),                       # down the axis (dropped)
+    ]
+    return revolve(profile, segments=segments, name=name)
+
+
 def build_conical_vessel(dims: dict, segments: int, name: str) -> Mesh:
     """Erlenmeyer: flat base, conical shoulder, cylindrical neck, open top."""
     base_r = dims["base_d"] / 2.0
@@ -613,6 +670,8 @@ def build(item: CatalogItem | str, segments: int = RENDER_SEGMENTS) -> Mesh:
     name = item.key
     if item.shape == "open_vessel":
         return build_open_vessel(item.dims, segments, name)
+    if item.shape == "necked_vessel":
+        return build_necked_vessel(item.dims, segments, name)
     if item.shape == "conical_vessel":
         return build_conical_vessel(item.dims, segments, name)
     if item.shape == "solid_cylinder":
@@ -696,7 +755,7 @@ def cavity_volume_m3(item: CatalogItem | str, segments: int = 256) -> float:
     """
     if isinstance(item, str):
         item = CATALOG[item]
-    if item.shape not in ("open_vessel", "conical_vessel"):
+    if item.shape not in ("open_vessel", "necked_vessel", "conical_vessel"):
         raise MeshError(f"{item.key}: {item.shape} has no cavity")
 
     hollow = build(item, segments=segments).volume_m3()
@@ -710,6 +769,17 @@ def cavity_volume_m3(item: CatalogItem | str, segments: int = 256) -> float:
             foot_h = min(d["wall"] * 2.0, d["height"] * 0.02)
             profile = [(base_r, 0.0), (base_r, foot_h), (outer_r, foot_h)]
         profile += [(outer_r, d["height"]), (0.0, d["height"]), (0.0, 0.0)]
+    elif item.shape == "necked_vessel":
+        outer_r = d["outer_d"] / 2.0
+        neck_r = d["neck_d"] / 2.0
+        profile = [
+            (outer_r, 0.0),
+            (outer_r, d["body_height"]),
+            (neck_r, d["height"] - d["neck_height"]),
+            (neck_r, d["height"]),
+            (0.0, d["height"]),
+            (0.0, 0.0),
+        ]
     else:
         shoulder_z = d["height"] - d["neck_height"]
         profile = [
