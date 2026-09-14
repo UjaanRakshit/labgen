@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+out/
+# Generated assets. Regenerable from catalog.py by meshes.py -- checking them
+# in would let a stale mesh disagree with a corrected catalog dimension.
+assets/generated/
