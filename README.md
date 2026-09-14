@@ -99,26 +99,65 @@ are:
   ratio). Both racks build, but both have unsourced footprints, so neither
   belongs in the reference scene yet. T3's collider checks are untested against
   a decomposed collider.
-- **"Opens in Isaac Lab without error" is still unverified.** The stage now
-  parses cleanly in real OpenUSD (`tests/test_usda_real_pxr.py`, via the
-  standalone `usd-core` wheel), with every physics schema resolving and every
-  world-space size exact. That is a much stronger check than the structural
-  reader in `tests/test_usda.py` — but it is still not a *physics* load, and it
-  says nothing about whether SDF cooking succeeds.
-- **`sdf` is not a standard `UsdPhysics` approximation token.** OpenUSD allows
-  `[none, convexDecomposition, convexHull, boundingSphere, boundingCube,
-  meshSimplification]`. `sdf` is a PhysX/Isaac extension. `usd-core` accepts it
-  because `allowedTokens` is advisory, and Isaac Lab's own dependency notes say
-  Newton honours USD-authored `physics:approximation` — but whether it accepts
-  this particular token is unconfirmed until the load runs. If it turns out to
-  want `PhysxSDFMeshCollisionAPI` instead, the fix is `approximation="none"`
-  plus that schema. **Never `convexHull`** — that seals every open vessel.
+- **The petri dish fails the settle test.** It sinks 8.43 mm in 2 s with no
+  actuation, against CLAUDE.md's 2 mm gate. This is *not* an SDF resolution
+  problem — the sink is bit-identical across authored voxel sizes of 1.6, 0.8
+  and 0.4 mm and with the SDF schema removed entirely, so it is contact
+  softness in the solver, not collider fidelity. Solver contact parameters need
+  tuning before T3's settle tolerance means anything. The other three bodies
+  pass comfortably (hotplate 0.01 mm, test_tube 0.10 mm, beaker 1.29 mm).
+- **The SDF collider currently changes nothing under `SolverMuJoCo`.**
+  `NewtonSDFCollisionAPI` is authored, Newton detects it
+  (`HasAPI(...)` is `True`) and reads the voxel size back, but simulated
+  contact is identical with and without it. It is not a correctness problem —
+  with `approximation="none"` the solver collides against the authored
+  triangles and the cavity survives — but the catalog's `collider="sdf"` is
+  presently decorative on this backend. Do not assume T3's collider-sanity
+  check has teeth until this is understood.
 - **The three vials are modelled as straight cylinders.** They need
   `necked_vessel`, whose builder exists and is tested, but converting them
   requires shoulder and neck dimensions nobody has sourced. The volume overshoot
   is the visible symptom; the real cost is that a gripper closes on a neck that
   is not in the mesh.
 - **No catalog entry is sourced.** See above.
+
+## What the real load established
+
+`bench_5.usda` loads and simulates in Isaac Lab 3.0.0 / Newton 1.6.0rc1
+(kit-less, `SolverMuJoCo`, CUDA). Getting there found four emitter bugs that
+every structural test in this repo had passed over:
+
+1. **`quatd` was written as a nested `(w, (x, y, z))` tuple.** USD text wants a
+   flat 4-tuple. The file did not parse at all.
+2. **Collision schemas were applied to the `Xform`, not the `Mesh`.**
+   `UsdPhysicsCollisionAPI` applies to a `UsdGeomGprim`; on an `Xform` it is
+   silently not a collider. Newton built shapes from the child meshes using its
+   own defaults and ignored everything authored.
+3. **`MaterialBindingAPI` was never applied**, so USD dropped
+   `material:binding:physics`. Every object simulated at Newton's default
+   friction of 1.0 instead of the catalog's values.
+4. **`physics:approximation = "sdf"` is not a token.** Newton's map has no such
+   key, so the lookup returned `None` and the vessels kept raw triangles with
+   nothing reported. SDF is requested by applying `NewtonSDFCollisionAPI`
+   alongside `approximation="none"`.
+
+Each produced a stage that looked correct in every check written against a
+reader in this repo. That is the argument for never letting the structural
+tests stand alone.
+
+**Hard rule 1 holds, and it was measured rather than assumed.** A 2 mL vial
+dropped from 50 mm inside a 250 mL beaker settles at -0.3 mm — it falls through
+the cavity to the bottom. Nothing seals the vessel. `examples/cavity_probe.json`
+is that experiment, and it is worth re-running whenever the collider strategy
+changes: it is the only check that distinguishes a real cavity from a
+convincing one.
+
+**SDF voxel sizing is derived, not defaulted.** `newton:sdfMaxResolution`
+defaults to 64 over the longest axis, which for `test_tube_16x100` is a 1.56 mm
+voxel against a 1.0 mm wall — the wall is thinner than one voxel, and an SDF
+coarser than the wall rasterises the vessel solid. `usda.py` authors
+`newton:sdfTargetVoxelSize` at wall/3 instead, so the setting is a property of
+the object rather than of the default.
 
 ## Conventions
 

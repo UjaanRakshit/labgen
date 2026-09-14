@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "name": "cavity_probe",
+  "robot_base_frame": "yam_base_link",
+  "source": {
+    "method": "hand_authored",
+    "note": "CLAUDE.md hard rule 1, as an experiment. A 2 mL vial is placed INSIDE a 250 mL beaker's cavity, 50 mm above the beaker base. If the cavity is real the vial falls to the cavity floor at z=0.0015. If the collider has sealed the vessel, the vial rests near the rim at z=0.095. There is no third outcome.",
+    "marker_config": "not_applicable_hand_authored",
+    "video": "none",
+    "git_sha": "0ca464295693f9fe7017bb62d62489a7f455a52d"
+  },
+  "objects": [
+    {
+      "instance_id": "bench",
+      "catalog_key": "bench_top",
+      "position": [
+        0.0,
+        0.3,
+        -0.04
+      ],
+      "orientation_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed": true,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "static"
+    },
+    {
+      "instance_id": "beaker",
+      "catalog_key": "beaker_250",
+      "position": [
+        0.0,
+        0.3,
+        0.0
+      ],
+      "orientation_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed": false,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "cavity floor at z=0.0015, rim at z=0.095"
+    },
+    {
+      "instance_id": "marble",
+      "catalog_key": "vial_2ml",
+      "position": [
+        0.0,
+        0.3,
+        0.05
+      ],
+      "orientation_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed": false,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "12 mm across, dropped inside a 67 mm cavity. Falls to 0.0015 if the cavity is real."
+    }
+  ]
+}

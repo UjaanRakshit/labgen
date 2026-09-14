@@ -41,9 +41,9 @@ BENCH_5 = "examples/bench_5.json"
 EXPECTED = {
     "bench": ("bench_top", True, "boundingCube"),
     "hotplate": ("hotplate_stirrer", False, "boundingCube"),
-    "beaker": ("beaker_250", False, "sdf"),
-    "test_tube": ("test_tube_16x100", False, "sdf"),
-    "petri": ("petri_dish_100", False, "sdf"),
+    "beaker": ("beaker_250", False, "none"),
+    "test_tube": ("test_tube_16x100", False, "none"),
+    "petri": ("petri_dish_100", False, "none"),
 }
 
 
@@ -86,13 +86,20 @@ def test_stage_units_are_si_and_z_up(stage):
 # --- physics schemas actually apply --------------------------------------
 
 @pytest.mark.parametrize("name", sorted(EXPECTED))
-def test_collision_schemas_resolve(name, stage):
-    prim = stage.GetPrimAtPath(f"/World/{name}")
-    assert prim.IsValid(), f"/World/{name} is not a valid prim"
-    assert UsdPhysics.CollisionAPI(prim), "PhysicsCollisionAPI did not apply"
-    assert UsdPhysics.MeshCollisionAPI(prim), "PhysicsMeshCollisionAPI did not apply"
+def test_collision_schemas_resolve_on_the_gprim(name, stage):
+    """The collider is the Mesh, not the Xform. See test_usda.py for why."""
+    xform = stage.GetPrimAtPath(f"/World/{name}")
+    geom = stage.GetPrimAtPath(f"/World/{name}/geom")
+    assert geom.IsValid(), f"/World/{name}/geom is not a valid prim"
 
-    attr = UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr()
+    assert not UsdPhysics.CollisionAPI(xform), (
+        "CollisionAPI is on the Xform, which is not a UsdGeomGprim -- it is "
+        "silently not a collider there"
+    )
+    assert UsdPhysics.CollisionAPI(geom), "PhysicsCollisionAPI did not apply"
+    assert UsdPhysics.MeshCollisionAPI(geom), "PhysicsMeshCollisionAPI did not apply"
+
+    attr = UsdPhysics.MeshCollisionAPI(geom).GetApproximationAttr()
     assert attr.IsValid()
     assert attr.Get() == EXPECTED[name][2]
 
@@ -119,7 +126,11 @@ def test_rigid_bodies_and_masses_resolve(name, stage):
 
 @pytest.mark.parametrize("name", sorted(EXPECTED))
 def test_physics_material_binding_resolves_to_a_real_prim(name, stage):
-    prim = stage.GetPrimAtPath(f"/World/{name}")
+    prim = stage.GetPrimAtPath(f"/World/{name}/geom")
+    assert "MaterialBindingAPI" in prim.GetAppliedSchemas(), (
+        "without MaterialBindingAPI applied, USD drops the binding and the "
+        "object simulates at the backend's default friction"
+    )
     rel = prim.GetRelationship("material:binding:physics")
     assert rel.IsValid()
     targets = rel.GetTargets()
@@ -251,26 +262,56 @@ def test_keypoints_survive_as_typed_attributes(stage):
     assert tuple(attr.Get()) == pytest.approx((0.0, -0.045, 0.105))
 
 
-# --- a finding, recorded as a test ---------------------------------------
+# --- a finding, now acted on rather than merely recorded ----------------
 
-def test_sdf_is_not_a_standard_usd_approximation_token(stage):
-    """`sdf` is a PhysX/Isaac extension, not part of UsdPhysics.
+def test_no_prim_writes_the_bogus_sdf_approximation_token(stage):
+    """`sdf` is not a UsdPhysics token, and Newton has no mapping for it.
 
-    UsdPhysics allows [none, convexDecomposition, convexHull, boundingSphere,
-    boundingCube, meshSimplification]. `usd-core` accepts `sdf` because
-    allowedTokens is advisory, but a strict consumer need not.
+    OpenUSD allows [none, convexDecomposition, convexHull, boundingSphere,
+    boundingCube, meshSimplification]. Newton's importer maps exactly those and
+    warns on anything else, so `approximation="sdf"` was a silent no-op: the
+    vessels kept raw triangles and nothing reported it.
 
-    This test documents the risk rather than asserting a fix, because only a
-    real Isaac load can say whether Isaac honours the token or wants
-    PhysxSDFMeshCollisionAPI instead. If it turns out to want the API, the
-    correct change is approximation="none" plus that schema -- NEVER
-    convexHull, which would seal every open vessel in the catalog.
+    SDF is now requested by applying NewtonSDFCollisionAPI with
+    approximation="none". This test makes sure the dead token cannot come back.
     """
-    attr = UsdPhysics.MeshCollisionAPI(
-        stage.GetPrimAtPath("/World/beaker")).GetApproximationAttr()
-    allowed = attr.GetMetadata("allowedTokens")
-    assert "sdf" not in allowed, (
-        "sdf is now a standard UsdPhysics token -- delete this test and the "
-        "corresponding known-gap note in README.md"
-    )
-    assert attr.Get() == "sdf", "the emitter still relies on the extension token"
+    from labgen.usda import SDF_API
+
+    allowed = set(UsdPhysics.MeshCollisionAPI(
+        stage.GetPrimAtPath("/World/beaker/geom")
+    ).GetApproximationAttr().GetMetadata("allowedTokens"))
+    assert "sdf" not in allowed
+
+    for prim in stage.Traverse():
+        attr = prim.GetAttribute("physics:approximation")
+        if attr.IsValid():
+            assert attr.Get() in allowed, (
+                f"{prim.GetPath()} authors approximation={attr.Get()!r}, which "
+                f"is not in {sorted(allowed)}"
+            )
+
+
+def test_sdf_vessels_carry_the_newton_sdf_schema_and_a_wall_sized_voxel(stage):
+    """Read the authored apiSchemas metadata, not GetAppliedSchemas().
+
+    `GetAppliedSchemas()` returns only schemas the running USD build has a
+    plugin for, and NewtonSDFCollisionAPI is registered by newton-usd-schemas,
+    which the usd-core venv does not have. The schema IS authored and Newton
+    does resolve it -- verified in Isaac Lab's environment, where
+    `prim.HasAPI("NewtonSDFCollisionAPI")` is True and the voxel size reads
+    back. Asserting on the filtered list here would wrongly report it missing.
+    """
+    from labgen.usda import SDF_API
+
+    for name in ("beaker", "test_tube", "petri"):
+        geom = stage.GetPrimAtPath(f"/World/{name}/geom")
+        authored = geom.GetMetadata("apiSchemas")
+        names = list(authored.prependedItems) + list(authored.explicitItems)
+        assert SDF_API in names, f"{name} lacks {SDF_API}; authored: {names}"
+        voxel = geom.GetAttribute("newton:sdfTargetVoxelSize").Get()
+        wall = CATALOG[EXPECTED[name][0]].dims["wall"]
+        assert voxel is not None and voxel < wall, (
+            f"{name}: voxel {voxel} is not finer than its {wall} m wall. "
+            f"An SDF coarser than the wall rasterises the vessel solid, which "
+            f"seals the cavity as surely as a convex hull would."
+        )

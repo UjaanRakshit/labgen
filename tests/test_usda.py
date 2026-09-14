@@ -193,12 +193,17 @@ def test_provenance_scope_carries_the_git_sha(parsed):
 
 # --- object structure ----------------------------------------------------
 
+# (catalog_key, fixed, approximation token, material, wants SDF)
+#
+# The SDF vessels author approximation="none" -- collide against the triangles
+# as written -- plus NewtonSDFCollisionAPI. There is no "sdf" approximation
+# token; see APPROXIMATION in usda.py for what writing one actually did.
 EXPECTED = {
-    "bench": ("bench_top", True, "boundingCube", "steel"),
-    "hotplate": ("hotplate_stirrer", False, "boundingCube", "steel"),
-    "beaker": ("beaker_250", False, "sdf", "glass"),
-    "test_tube": ("test_tube_16x100", False, "sdf", "glass"),
-    "petri": ("petri_dish_100", False, "sdf", "plastic"),
+    "bench": ("bench_top", True, "boundingCube", "steel", False),
+    "hotplate": ("hotplate_stirrer", False, "boundingCube", "steel", False),
+    "beaker": ("beaker_250", False, "none", "glass", True),
+    "test_tube": ("test_tube_16x100", False, "none", "glass", True),
+    "petri": ("petri_dish_100", False, "none", "plastic", True),
 }
 
 
@@ -218,22 +223,67 @@ def test_every_object_has_a_mesh_child(parsed):
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED))
-def test_collider_approximation_is_explicit_and_correct(name, parsed):
-    """CLAUDE.md: every collider has an explicit approximation set."""
+def test_collider_lives_on_the_mesh_not_the_xform(name, parsed):
+    """UsdPhysicsCollisionAPI applies to a Gprim, never to an Xform.
+
+    Applied to an Xform it is silently not a collider. Newton says so --
+    "CollisionAPI applied to an unknown UsdGeomGPrim type" -- and then builds a
+    shape from the child mesh with its own defaults, so the authored
+    approximation and material binding are read by nobody. Every vessel
+    simulated at Newton's default friction of 1.0 instead of glass's 0.40 while
+    every structural check here passed.
+    """
     _, prims = parsed
-    _, _, approximation, _ = EXPECTED[name]
-    prim = _prim(prims, f"/World/{name}")
-    assert prim.attrs["physics:approximation"] == f'"{approximation}"'
-    assert prim.attrs["physics:collisionEnabled"] == "1"
-    assert "PhysicsCollisionAPI" in prim.schemas
-    assert "PhysicsMeshCollisionAPI" in prim.schemas
+    _, _, approximation, _, wants_sdf = EXPECTED[name]
+
+    xform = _prim(prims, f"/World/{name}")
+    assert "PhysicsCollisionAPI" not in xform.schemas, "collision API on the Xform"
+    assert "PhysicsMeshCollisionAPI" not in xform.schemas
+
+    geom = _prim(prims, f"/World/{name}/geom")
+    assert "PhysicsCollisionAPI" in geom.schemas
+    assert "PhysicsMeshCollisionAPI" in geom.schemas
+    assert geom.attrs["physics:approximation"] == f'"{approximation}"'
+    assert geom.attrs["physics:collisionEnabled"] == "1"
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED))
+def test_sdf_colliders_apply_the_sdf_schema_not_an_approximation_token(name, parsed):
+    """`sdf` is not a UsdPhysics approximation token and never was.
+
+    Writing one is a no-op: Newton's approximation map has no such key, so the
+    lookup returns None and the shape keeps raw triangles. SDF is requested by
+    applying NewtonSDFCollisionAPI, which must be paired with
+    approximation="none".
+    """
+    from labgen.usda import SDF_API
+
+    _, prims = parsed
+    *_, wants_sdf = EXPECTED[name]
+    geom = _prim(prims, f"/World/{name}/geom")
+
+    if wants_sdf:
+        assert SDF_API in geom.schemas
+        assert geom.attrs["physics:approximation"] == '"none"', (
+            "Newton warns when a non-none approximation is co-authored with the "
+            "SDF API"
+        )
+        voxel = float(geom.attrs["newton:sdfTargetVoxelSize"])
+        wall = CATALOG[EXPECTED[name][0]].dims["wall"]
+        assert voxel < wall, (
+            f"{name}: voxel {voxel * 1000:.3f} mm is not finer than its "
+            f"{wall * 1000:.1f} mm wall, so the SDF cannot resolve the cavity"
+        )
+    else:
+        assert SDF_API not in geom.schemas
+        assert "newton:sdfTargetVoxelSize" not in geom.attrs
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED))
 def test_dynamic_bodies_have_explicit_mass_and_statics_have_none(name, parsed):
     """CLAUDE.md rule 4: no silent defaults, and no density inference."""
     _, prims = parsed
-    catalog_key, fixed, _, _ = EXPECTED[name]
+    catalog_key, fixed, _, _, _ = EXPECTED[name]
     prim = _prim(prims, f"/World/{name}")
 
     if fixed:
@@ -250,11 +300,18 @@ def test_dynamic_bodies_have_explicit_mass_and_statics_have_none(name, parsed):
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED))
-def test_every_object_binds_a_physics_material(name, parsed):
+def test_every_collider_binds_a_physics_material_with_the_binding_api(name, parsed):
+    """MaterialBindingAPI must be applied, or the binding is ignored.
+
+    USD warns "Found material bindings ... but MaterialBindingAPI is not
+    applied" and drops it. That is how a bench of glassware simulated at
+    Newton's default friction of 1.0 rather than the catalog's values.
+    """
     _, prims = parsed
-    _, _, _, material = EXPECTED[name]
-    prim = _prim(prims, f"/World/{name}")
-    assert prim.attrs["material:binding:physics"] == f"</World/PhysicsMaterials/{material}>"
+    _, _, _, material, _ = EXPECTED[name]
+    geom = _prim(prims, f"/World/{name}/geom")
+    assert "MaterialBindingAPI" in geom.schemas
+    assert geom.attrs["material:binding:physics"] == f"</World/PhysicsMaterials/{material}>"
     _prim(prims, f"/World/PhysicsMaterials/{material}")
 
 

@@ -44,11 +44,50 @@ MATERIAL_SCOPE = "/World/PhysicsMaterials"
 # If a backend ever rejects the `sdf` token, the correct fallback is `none`
 # (use the triangles as they are), never `convexHull`. See HULL_IS_A_LIE.
 APPROXIMATION: dict[str, str] = {
-    "sdf": "sdf",
+    # "none" means "collide against the triangles as authored". It is what an
+    # SDF collider wants, because the SDF is baked FROM those triangles.
+    #
+    # There is no `sdf` approximation token, and writing one does nothing. This
+    # emitter used to, and the result was silent: Newton's
+    # approximation_to_remeshing_method map has no "sdf" key, so the lookup
+    # returned None, every vessel came back with `sdf = None`, and the scene
+    # simulated against raw triangle soup while the stage looked correct in
+    # every structural check. SDF is requested by applying an API schema
+    # instead -- see SDF_API below.
+    "sdf": "none",
     "convex_hull": "convexHull",
     "convex_decomposition": "convexDecomposition",
     "box": "boundingCube",
 }
+
+# Newton's canonical opt-in: "Applying NewtonSDFCollisionAPI is the canonical
+# signal that SDF generation is configured for this shape" (newton's own
+# import_usd.py). It must be paired with approximation="none" -- Newton warns
+# if a non-none approximation is co-authored with it.
+#
+# This is a Newton-specific schema, and CLAUDE.md says not to put backend
+# specifics in labgen core. The rule is about *Python APIs*: a USD stage has to
+# express SDF somehow, and there is no backend-neutral way to say it. The
+# arrangement here is the safe one -- a backend that does not know this schema
+# ignores it and falls back to approximation="none", i.e. the full triangle
+# mesh. That is slower but geometrically correct. It never degrades to a convex
+# hull, which would seal every open vessel in the catalog.
+SDF_API = "NewtonSDFCollisionAPI"
+
+# How many voxels we insist on across the thinnest wall in the object.
+#
+# The default is newton:sdfMaxResolution = 64 over the longest axis, which for
+# test_tube_16x100 is 100 mm / 64 = 1.56 mm voxels against a 1.0 mm wall: the
+# wall is thinner than a single voxel and the cavity does not survive
+# rasterisation. Deriving the voxel size from the wall instead of accepting a
+# resolution makes the setting a property of the object rather than of the
+# default, which is the whole premise of the catalog.
+SDF_VOXELS_ACROSS_WALL = 3.0
+
+# A dense SDF is (extent / voxel)^3 samples. Refusing to author a grid bigger
+# than this is a guard against a thin-walled, large-extent object silently
+# asking for gigabytes.
+SDF_MAX_VOXELS = 40_000_000
 
 # CLAUDE.md hard rule 1, restated at the one place it could actually be
 # violated. A convex hull over a beaker seals the opening: nothing can be put
@@ -139,6 +178,38 @@ def _approximation_for(obj: SceneObject) -> str:
         raise UsdaError(f"{obj.instance_id}: unknown collider {collider!r}") from None
 
 
+def sdf_voxel_size(item, mesh: Mesh) -> float:
+    """Voxel size for an SDF collider, derived from the object's own wall.
+
+    Returns metres. Sized so `SDF_VOXELS_ACROSS_WALL` voxels span the thinnest
+    wall, because an SDF coarser than the wall closes the cavity: the inside
+    and outside surfaces land in the same voxel and the vessel rasterises
+    solid. That is the same failure as a convex hull, arrived at numerically
+    instead of structurally, and it is just as invisible in a render.
+    """
+    wall = item.dims.get("wall")
+    if wall is None:
+        raise UsdaError(
+            f"{item.key}: SDF collider on a shape with no `wall` dimension, so "
+            f"there is no thickness to resolve against. Set one, or choose a "
+            f"different collider -- do not fall back to the default resolution."
+        )
+
+    voxel = wall / SDF_VOXELS_ACROSS_WALL
+    extent = mesh.extents()
+    voxels = float((extent / voxel).prod())
+    if voxels > SDF_MAX_VOXELS:
+        raise UsdaError(
+            f"{item.key}: resolving a {wall * 1000:.1f} mm wall at "
+            f"{SDF_VOXELS_ACROSS_WALL:g} voxels across needs a "
+            f"{voxel * 1000:.3f} mm grid over a "
+            f"{extent[0]:.3f} x {extent[1]:.3f} x {extent[2]:.3f} m extent, "
+            f"which is {voxels / 1e6:.0f}M voxels. Refusing to author it. "
+            f"Either the wall or the extent is wrong."
+        )
+    return voxel
+
+
 # --------------------------------------------------------------------------
 # emission
 #
@@ -166,11 +237,39 @@ def _emit_material(m: PhysicsMaterial) -> list[str]:
     return out
 
 
-def _emit_mesh_prim(name: str, mesh: Mesh, purpose: str = "default") -> list[str]:
+def _emit_mesh_prim(name: str, mesh: Mesh, purpose: str = "default",
+                    collider: tuple[str, PhysicsMaterial] | None = None,
+                    sdf_voxel: float | None = None) -> list[str]:
+    """A UsdGeomMesh, optionally carrying the collision schemas.
+
+    The collision APIs belong **here**, on the Gprim, not on the parent Xform.
+    UsdPhysicsCollisionAPI applies to a UsdGeomGprim; applied to an Xform it is
+    silently not a collider. Newton says so out loud --
+
+        CollisionAPI applied to an unknown UsdGeomGPrim type, prim /World/beaker
+
+    -- and then builds a shape from the child mesh using its own defaults. The
+    effect is that `physics:approximation` is read by nobody: every vessel came
+    back with `sdf = None` and friction 1.0 instead of glass's 0.45, while the
+    stage looked completely correct in every structural check.
+
+    PhysicsRigidBodyAPI and PhysicsMassAPI stay on the Xform, which is right --
+    the body is the Xform, the collider is the geometry under it.
+    """
     counts = ", ".join("3" for _ in mesh.faces)
     indices = ", ".join(str(int(i)) for f in mesh.faces for i in f)
-    out = [
-        f'def Mesh "{name}"',
+
+    header = [f'def Mesh "{name}"']
+    if collider is not None:
+        schemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+        if sdf_voxel is not None:
+            schemas.append(SDF_API)
+        header += [
+            "(",
+            f'    prepend apiSchemas = [{", ".join(chr(34) + s + chr(34) for s in schemas)}]',
+            ")",
+        ]
+    out = header + [
         "{",
         f"    point3f[] points = [{_mesh_points(mesh)}]",
         f"    int[] faceVertexCounts = [{counts}]",
@@ -179,6 +278,26 @@ def _emit_mesh_prim(name: str, mesh: Mesh, purpose: str = "default") -> list[str
     ]
     if purpose != "default":
         out.append(f'    uniform token purpose = "{purpose}"')
+    if collider is not None:
+        approximation, material = collider
+        out += [
+            "",
+            f'    uniform token physics:approximation = "{approximation}"',
+            "    bool physics:collisionEnabled = 1",
+            # MaterialBindingAPI is applied above. Without it USD warns
+            # "Found material bindings ... but MaterialBindingAPI is not
+            # applied" and the binding is ignored, which is how a bench of
+            # glassware ended up simulating at Newton's default friction.
+            f"    rel material:binding:physics = <{_material_prim(material)}>",
+        ]
+        if sdf_voxel is not None:
+            out += [
+                "",
+                f"    # SDF sized to this object's own wall, not to the default",
+                f"    # resolution. An SDF coarser than the wall rasterises the",
+                f"    # vessel solid and seals the cavity.",
+                f"    float newton:sdfTargetVoxelSize = {_fmt(sdf_voxel)}",
+            ]
     out.append("}")
     return out
 
@@ -215,16 +334,17 @@ def _emit_object(obj: SceneObject) -> list[str]:
     approximation = _approximation_for(obj)
     mass = obj.mass_kg()
 
-    schemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
-    if not obj.fixed:
-        schemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"] + schemas
+    # The Xform is the *body*; the Mesh under it is the *collider*. Collision
+    # and material-binding schemas go on the Mesh (see _emit_mesh_prim). A
+    # static fixture is a collider with no body, so its Xform carries nothing.
+    schemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"] if not obj.fixed else []
     schema_list = ", ".join('"' + s + '"' for s in schemas)
 
     sourced = "yes" if item.verified else "NO -- dimensions unverified"
-    out = [
-        f'def Xform "{name}" (',
-        f"    prepend apiSchemas = [{schema_list}]",
-        ")",
+    out = [f'def Xform "{name}"']
+    if schemas:
+        out += ["(", f"    prepend apiSchemas = [{schema_list}]", ")"]
+    out += [
         "{",
         f"    # {item.display_name}",
         f"    # provenance={obj.provenance}  confidence={obj.confidence:.2f}  sourced={sourced}",
@@ -258,16 +378,14 @@ def _emit_object(obj: SceneObject) -> list[str]:
             "    bool physics:kinematicEnabled = 0",
         ]
 
-    out += [
-        "",
-        f'    uniform token physics:approximation = "{approximation}"',
-        "    bool physics:collisionEnabled = 1",
-        f"    rel material:binding:physics = <{_material_prim(item.material)}>",
-        "",
-    ]
+    voxel = sdf_voxel_size(item, mesh) if obj.collider() == "sdf" else None
+
+    out.append("")
     out += _indent(_emit_keypoints(obj), 1)
     out.append("")
-    out += _indent(_emit_mesh_prim("geom", mesh), 1)
+    out += _indent(
+        _emit_mesh_prim("geom", mesh, collider=(approximation, item.material),
+                        sdf_voxel=voxel), 1)
     if collision is not None:
         out.append("")
         out += _indent(_emit_mesh_prim("collision", collision, purpose="guide"), 1)
