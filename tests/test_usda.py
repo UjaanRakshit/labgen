@@ -405,3 +405,40 @@ def test_bench_5_writes_to_disk(scene, tmp_path):
     meta, prims = parse_usda(path.read_text(encoding="utf-8"))
     assert meta["metersPerUnit"] == "1"
     assert len([p for p in prims if p.depth == 1]) == 7   # 2 scopes + 5 objects
+
+
+# --- provenance integrity ------------------------------------------------
+
+def test_recorded_git_sha_resolves_in_this_repo(scene):
+    """A scene records the commit it was built at. That must still exist.
+
+    Not hypothetical: rewriting this repo's history to correct the commit
+    authorship changed every SHA, and bench_5.json was left pointing at a
+    commit that no longer existed. A provenance record that names a
+    non-existent commit is worse than no record -- it looks traceable and is
+    not, which is the same failure shape as an unsourced dimension flagged
+    `verified`.
+
+    Skips outside a git checkout so a source tarball still tests clean.
+    """
+    import shutil
+    import subprocess
+
+    sha = scene.source.get("git_sha")
+    assert sha, "bench_5 records no git_sha"
+    assert re.fullmatch(r"[0-9a-f]{40}", sha), f"malformed git_sha {sha!r}"
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    probe = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
+                           capture_output=True, text=True)
+    if probe.returncode != 0:
+        pytest.skip("not a git checkout")
+
+    found = subprocess.run(["git", "cat-file", "-t", sha],
+                           capture_output=True, text=True)
+    assert found.returncode == 0 and found.stdout.strip() == "commit", (
+        f"bench_5.json records git_sha {sha}, which does not resolve to a "
+        f"commit in this repository. History rewritten? Update the scene's "
+        f"provenance to the commit it actually corresponds to."
+    )

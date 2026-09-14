@@ -7,7 +7,7 @@
     "note": "Milestone one. No video, no reconstruction. Every dimension comes from a catalog template, so the scene is metric by construction and needs no scale reference. A video-derived scene DOES need one -- see marker_config below.",
     "marker_config": "not_applicable_hand_authored",
     "video": "none",
-    "git_sha": "8f5af670d3bcb4c63b2289614c97fad5d89b8aef",
+    "git_sha": "abb7d41e72ba2db9809969d69362dd648a3f0923",
     "frame_convention": "Robot base at the origin. Bench top surface at z=0, so the arm mounts flush to it. Bench extends in +y, in front of the robot.",
     "composition_rationale": "Chosen for collider coverage rather than object variety: box (static + dynamic) and sdf (normal, small-feature, and extreme-aspect-ratio). convex_decomposition is deliberately NOT covered here -- see known_gaps."
   },
