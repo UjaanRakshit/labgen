@@ -99,10 +99,20 @@ are:
   ratio). Both racks build, but both have unsourced footprints, so neither
   belongs in the reference scene yet. T3's collider checks are untested against
   a decomposed collider.
-- **"Opens in Isaac Lab without error" is unverified.** Isaac Lab is Linux-only
-  and this suite runs without a GPU or `pxr`. `tests/test_usda.py` checks the
-  emitted stage structurally — balanced scopes, stage metadata, and every
-  physics invariant — but a green run is not a load test.
+- **"Opens in Isaac Lab without error" is still unverified.** The stage now
+  parses cleanly in real OpenUSD (`tests/test_usda_real_pxr.py`, via the
+  standalone `usd-core` wheel), with every physics schema resolving and every
+  world-space size exact. That is a much stronger check than the structural
+  reader in `tests/test_usda.py` — but it is still not a *physics* load, and it
+  says nothing about whether SDF cooking succeeds.
+- **`sdf` is not a standard `UsdPhysics` approximation token.** OpenUSD allows
+  `[none, convexDecomposition, convexHull, boundingSphere, boundingCube,
+  meshSimplification]`. `sdf` is a PhysX/Isaac extension. `usd-core` accepts it
+  because `allowedTokens` is advisory, and Isaac Lab's own dependency notes say
+  Newton honours USD-authored `physics:approximation` — but whether it accepts
+  this particular token is unconfirmed until the load runs. If it turns out to
+  want `PhysxSDFMeshCollisionAPI` instead, the fix is `approximation="none"`
+  plus that schema. **Never `convexHull`** — that seals every open vessel.
 - **The three vials are modelled as straight cylinders.** They need
   `necked_vessel`, whose builder exists and is tested, but converting them
   requires shoulder and neck dimensions nobody has sourced. The volume overshoot
@@ -127,6 +137,29 @@ uv venv --python 3.12
 uv pip install -e ".[dev]"
 uv run pytest
 ```
+
+### Validating emitted USD against real OpenUSD
+
+`tests/test_usda.py` parses the emitted stage with a reader written in this
+repo. That is a smoke test, not validation — a reader and an emitter written by
+the same hand against the same wrong assumption agree with each other perfectly.
+That is not hypothetical: the emitter wrote `quatd` as a nested
+`(w, (x, y, z))` tuple, the repo's reader accepted it, 396 tests passed, and no
+USD implementation would open the file.
+
+So validate against actual OpenUSD, in a **separate venv**:
+
+```sh
+uv venv --python 3.12 .venv-usd
+VIRTUAL_ENV=.venv-usd uv pip install usd-core -e ".[dev]"
+.venv-usd/Scripts/python -m pytest        # Windows
+.venv-usd/bin/python -m pytest            # Linux
+```
+
+Separate because Isaac Lab's environment uses `usd-exchange` as its pxr
+provider, and its own dependency notes warn that two USD providers in one
+environment overwrite each other's files — removing either then breaks `pxr`.
+CI must run these; a skip here is the gap that let a non-parsing file through.
 
 Do not install this into the Isaac Lab environment casually. That is a pinned
 beta branch (Isaac Lab 3.0 Beta 2, `develop`) and adding a package can break

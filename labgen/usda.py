@@ -79,8 +79,15 @@ def _vec3(v) -> str:
 
 
 def _quat(q) -> str:
-    # USD writes quaternions as (w, (x, y, z)).
-    return f"({_fmt(q[0])}, ({_fmt(q[1])}, {_fmt(q[2])}, {_fmt(q[3])}))"
+    """A USD `quatd` literal: a FLAT 4-tuple, real part first.
+
+    Not `(w, (x, y, z))`. That nested form is how the C++ Gf constructor reads,
+    and it is what this emitter wrote until a real `pxr` parse rejected it with
+    "Tuple nesting too deep". The whole file failed to load, and the project's
+    own structural tests did not notice, because they were written against the
+    same wrong assumption as the emitter.
+    """
+    return f"({_fmt(q[0])}, {_fmt(q[1])}, {_fmt(q[2])}, {_fmt(q[3])})"
 
 
 def _escape(text: str) -> str:

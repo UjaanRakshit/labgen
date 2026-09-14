@@ -284,11 +284,17 @@ def test_pose_matches_the_scene_spec(name, parsed, scene):
     assert prim.attrs["xformOpOrder"] == '["xformOp:translate", "xformOp:orient"]'
 
 
-def test_orientation_is_written_w_first(parsed):
-    """USD writes (w, (x, y, z)). Getting this backwards is a silent 180 degree
-    error on every asymmetric object."""
+def test_orientation_is_a_flat_quat_literal(parsed):
+    """A USD `quatd` literal is a FLAT 4-tuple, real part first.
+
+    This test previously asserted "(1, (0, 0, 0))" -- the nested form -- and
+    passed, while the emitted file did not parse in USD at all. The structural
+    reader in this module was written against the same wrong assumption as the
+    emitter, so the two agreed with each other and both were wrong. That is the
+    precise reason `test_usda_real_pxr.py` exists.
+    """
     _, prims = parsed
-    assert _prim(prims, "/World/beaker").attrs["xformOp:orient"] == "(1, (0, 0, 0))"
+    assert _prim(prims, "/World/beaker").attrs["xformOp:orient"] == "(1, 0, 0, 0)"
 
 
 def test_bench_is_sunk_so_its_top_lands_on_the_robot_base_plane(scene):
