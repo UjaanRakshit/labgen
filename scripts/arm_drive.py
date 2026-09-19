@@ -35,40 +35,104 @@ YAM_EFFORT_LIMIT_NM = 10.0
 # is out of scope for T4; getting the arm to stand up is in scope, and this is
 # the minimum that achieves it. A real gain set comes from the YAM's own
 # controller, not from what looks right on screen.
-DEFAULT_KE = 300.0
-DEFAULT_KD = 30.0
+DEFAULT_KE = 3000.0
+DEFAULT_KD = 150.0
 DEFAULT_ARMATURE = 0.02
+
+# ---------------------------------------------------------------------------
+# ABOVE SPEC. The YAM's actuatorfrcrange is +/-10 N.m and this is 40.
+#
+# Measured (scripts/probe_torque.py), holding the beaker's body_grasp pose at
+# a 0.40 m reach with the wrist pointing down:
+#
+#     10 N.m  ->  joint2 sags 48.7 deg, fingertip 317 mm from target
+#     20 N.m  ->  joint2 holds to  1.9 deg, fingertip  17.6 mm
+#     40 N.m  ->  identical to 20, so ~20 N.m is where it saturates
+#
+# The shoulder needs roughly twice the robot's rated joint torque just to hold
+# station at this reach. Two readings, and they matter differently:
+#
+#   * the URDF's inertial data overstates the arm, or
+#   * a YAM genuinely cannot hold a 0.40 m top-down pose on joint torque alone.
+#
+# The second is entirely plausible for a lightweight teleop arm -- those are
+# often held up by the operator through the leader arm, not by the follower's
+# own actuators. If it is true, then a task laid out at this reach is one the
+# hardware cannot do, and any success rate measured for it in simulation would
+# be measuring something the real robot never could. That is exactly the
+# sim/real gap MATTERIX names, arriving through the actuator spec instead of
+# through geometry.
+#
+# Running over spec is therefore a DEMO decision, recorded here so it cannot be
+# mistaken for a physical claim. Resolve it by checking the YAM's real
+# gravity-compensation behaviour before any of this feeds a trust number.
+# ---------------------------------------------------------------------------
+OVER_SPEC_EFFORT_NM = 40.0
+
+# The fingers are PRISMATIC, so their gains are N/m, not N.m/rad. Reusing the
+# arm's 300 gave 300 N/m -- a 4 mm squeeze on a beaker produced 0.6 N of grip,
+# against the ~1 N needed just to hold its weight through friction. The hand
+# closed correctly, reported the right joint positions, and dropped everything.
+#
+# 20000 N/m saturates the effort limit within about half a millimetre, so the
+# grip force is set by FINGER_EFFORT_N below and not by how hard the planner
+# happens to squeeze.
+FINGER_KE = 20000.0
+FINGER_KD = 400.0
+
+# Unsourced. The YAM's actuatorfrcrange covers the six arm joints; the repo
+# carries no force figure for the linear gripper, so this is a plausible
+# small-electric-gripper number and is flagged as a guess. With mu = 0.4 it
+# gives 2 * 0.4 * 25 = 20 N of friction, comfortably above the 1 N weight of a
+# 250 mL beaker -- the margin is wide enough that the exact value does not
+# decide whether a grasp holds, which is the only reason it is tolerable here.
+FINGER_EFFORT_N = 25.0
 
 
 def configure_drives(builder: newton.ModelBuilder, *, dof_slice: slice | None = None,
                      ke: float = DEFAULT_KE, kd: float = DEFAULT_KD,
-                     effort: float = YAM_EFFORT_LIMIT_NM,
-                     armature: float = DEFAULT_ARMATURE, verbose: bool = True) -> None:
-    """Put the given dofs into position control with a usable drive."""
+                     effort: float = OVER_SPEC_EFFORT_NM,
+                     armature: float = DEFAULT_ARMATURE,
+                     n_fingers: int = 0, verbose: bool = True) -> None:
+    """Put the given dofs into position control with a usable drive.
+
+    `n_fingers` marks how many dofs at the END of the slice are prismatic
+    gripper joints, which get their own gains and force limit. Revolute and
+    prismatic gains are not the same quantity -- N.m/rad against N/m -- and
+    sharing a number between them is silently wrong in whichever direction the
+    scale happens to fall.
+    """
     n = builder.joint_dof_count
     sl = dof_slice if dof_slice is not None else slice(0, n)
+    start, stop, _ = sl.indices(n)
+    finger_start = stop - n_fingers
 
-    def put(name: str, value) -> bool:
+    def put(name: str, value, lo: int, hi: int) -> bool:
         arr = getattr(builder, name, None)
         if arr is None:
             return False
-        for i in range(*sl.indices(n)):
+        for i in range(lo, hi):
             arr[i] = value
         return True
 
-    applied = {
-        "joint_target_mode": put("joint_target_mode", int(newton.JointTargetMode.POSITION)),
-        "joint_target_ke": put("joint_target_ke", ke),
-        "joint_target_kd": put("joint_target_kd", kd),
-        "joint_effort_limit": put("joint_effort_limit", effort),
-        "joint_armature": put("joint_armature", armature),
-    }
-    if verbose:
-        missing = [k for k, ok in applied.items() if not ok]
-        print(f"   drives: dofs [{sl.start}:{sl.stop}] mode=POSITION "
-              f"ke={ke} kd={kd} effort={effort} N.m")
-        if missing:
-            print(f"   (builder has no {missing})")
+    ok = True
+    for lo, hi, k, d, e, tag in (
+        (start, finger_start, ke, kd, effort, "arm"),
+        (finger_start, stop, FINGER_KE, FINGER_KD, FINGER_EFFORT_N, "fingers"),
+    ):
+        if lo >= hi:
+            continue
+        ok &= put("joint_target_mode", int(newton.JointTargetMode.POSITION), lo, hi)
+        ok &= put("joint_target_ke", k, lo, hi)
+        ok &= put("joint_target_kd", d, lo, hi)
+        ok &= put("joint_effort_limit", e, lo, hi)
+        ok &= put("joint_armature", armature, lo, hi)
+        if verbose:
+            unit = "N.m" if tag == "arm" else "N"
+            print(f"   drives[{tag:7}] dofs [{lo}:{hi}] POSITION ke={k:g} kd={d:g} "
+                  f"effort={e:g} {unit}")
+    if verbose and not ok:
+        print("   (some drive arrays are missing on this builder)")
 
 
 def report(model: newton.Model, label: str = "") -> None:

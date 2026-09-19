@@ -35,19 +35,37 @@ def test_key_matches_registration(key: str):
 
 
 @pytest.mark.parametrize("key", sorted(CATALOG))
-def test_open_vessels_never_use_a_convex_hull(key: str):
+def test_open_vessels_never_use_a_sealing_collider(key: str):
     """CLAUDE.md hard rule 1.
 
     A convex hull over a beaker seals the opening. Nothing can be placed
     inside it, and a policy appears to succeed by resting an object on a lid
     that does not exist. This is the single most damaging thing that can be
     wrong in the catalog, because the resulting scene looks correct.
+
+    **convex_decomposition seals a shallow vessel too**, which the rule as
+    originally written did not say. Measured, not assumed: switching
+    petri_dish_100 to convex_decomposition made the settle test pass (8.00 mm
+    sink -> 0.01 mm) while a test tube dropped into the dish came to rest at
+    z=23 mm, on top of the rim, instead of z=0.02 mm on the floor. CoACD fills
+    the cavity of a 100 x 15 mm dish because there is barely a concavity to
+    follow. A green settle test and a sealed vessel is the worst possible
+    trade, so the check covers both colliders.
+
+    Deeper concavities survive decomposition -- the tube racks use it for their
+    bores -- which is why this is scoped to OPEN_SHAPES rather than banned
+    outright.
     """
     item = CATALOG[key]
     if item.shape in OPEN_SHAPES:
+        assert item.collider not in ("convex_hull", "convex_decomposition"), (
+            f"{key} is an open vessel with collider={item.collider!r}, which "
+            f"can seal the opening. Verify with scripts/probe_petri_cavity.py "
+            f"before changing this."
+        )
         assert item.collider == "sdf", (
             f"{key} is an open vessel with collider={item.collider!r}. "
-            f"Open vessels must use SDF; a hull seals the opening."
+            f"Open vessels use SDF."
         )
 
 
