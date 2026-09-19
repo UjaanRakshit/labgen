@@ -16,6 +16,9 @@ DOC_HOME_GRIPPER = np.array([0.110597512463, 0.0, 0.173501403591])
 
 b = newton.ModelBuilder()
 b.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
+    # actuator_mode defaults to None, i.e. no drive at all. Gains and targets
+    # are then inert, which is why raising target_ke did nothing.
+    actuator_mode=newton.JointTargetMode.POSITION,
     target_ke=float(sys.argv[2]) if len(sys.argv) > 2 else 400.0,
     target_kd=float(sys.argv[3]) if len(sys.argv) > 3 else 40.0,
     effort_limit=float(sys.argv[4]) if len(sys.argv) > 4 else 10.0,

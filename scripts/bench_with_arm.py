@@ -176,7 +176,12 @@ def main() -> int:
             arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
         if arr.ndim == 3 and arr.shape[2] == 4:
             arr = arr[:, :, :3]
-        arr = np.flipud(arr)
+        # NOT flipped. ViewerGL.get_frame() already returns rows top-down.
+        # An np.flipud() here mirrored every render vertically: the bench
+        # filled the top of frame with the background below it, the arm
+        # appeared to hang downward, and a box on the worktop read as a hole
+        # punched into it. Everything looked plausible enough to not question.
+        arr = arr
 
         from PIL import Image
 

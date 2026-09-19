@@ -499,3 +499,33 @@ def test_recorded_git_sha_resolves_in_this_repo(scene):
         f"commit in this repository. History rewritten? Update the scene's "
         f"provenance to the commit it actually corresponds to."
     )
+
+
+# --- the arm demo scene --------------------------------------------------
+
+def test_bench_arm_is_valid_and_reachable():
+    """`examples/bench_arm.json` is bench_5's objects, re-placed for the robot.
+
+    bench_5 predates the arm and puts objects inside its swept volume, so the
+    reach knocks the beaker over. It is deliberately NOT moved -- it is the
+    reference the settle test and the USD tests measure against, and shifting
+    things to suit a demo would quietly invalidate those numbers. bench_arm is
+    a second scene instead.
+
+    The YAM's sampled workspace reaches 0.74 m from its base, and the arm's own
+    body occupies roughly the first 0.25 m, so every object has to sit in
+    between.
+    """
+    import math
+
+    scene = SceneSpec.read("examples/bench_arm.json")
+    assert scene.robot_base_frame == "yam_base_link"
+
+    for obj in scene.free_bodies:
+        reach = math.hypot(obj.position[0], obj.position[1])
+        assert 0.25 < reach < 0.74, (
+            f"{obj.instance_id} sits {reach:.3f} m from the robot base, "
+            f"outside the band the arm can actually work in"
+        )
+
+    usda.emit(scene)        # must also survive emission
