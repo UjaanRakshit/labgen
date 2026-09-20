@@ -30,17 +30,56 @@ import newton
 N_ARM = 6
 N_FINGER = 2
 
-FINGER_OPEN = 0.0
-FINGER_CLOSED = -0.047
-GAP_OPEN = 0.089
-GAP_CLOSED = 0.005
+# Finger calibration, measured from the JAW geometry (scripts/probe_gap2.py):
+#
+#     q =  0.000  ->   0.06 mm   jaws closed
+#     q = -0.047  ->  94.06 mm   jaws fully open
+#
+# and linear to within the sampling resolution across the whole stroke.
+#
+# The previous model had this exactly backwards -- 89 mm at q=0 and 5 mm at
+# q=-0.047 -- because it was read off the separation of the tip BODY ORIGINS.
+# Those origins DO move together as q goes to -0.047, but each finger is a
+# wedge that extends inward from its own origin, so the jaws do the opposite of
+# what the origins do. Commanding "open" therefore shut the hand, and
+# commanding a 70 mm grip drove the pads to roughly 12 mm and straight through
+# the glass. Nothing about the numbers looked wrong; the render did.
+#
+# A second trap on the way: the minimum distance between the two finger meshes
+# taken as a whole plateaus at 19 mm regardless of jaw position, because the
+# brackets near the mount sit a fixed distance apart. Measuring that instead of
+# the jaws says the gripper can only open 19 mm and that a beaker can never be
+# picked up. Only the distal half of the finger is the jaw.
+FINGER_CLOSED = 0.0
+FINGER_OPEN = -0.047
+GAP_CLOSED = 0.00006
+GAP_OPEN = 0.09406
+
+MAX_GRASP_WIDTH = GAP_OPEN
+
+
+class GraspTooWide(ValueError):
+    """The object is wider than the gripper can open."""
 
 
 def finger_q_for_gap(gap_m: float) -> float:
-    """Joint coordinate that puts the fingertips `gap_m` apart."""
-    frac = (GAP_OPEN - gap_m) / (GAP_OPEN - GAP_CLOSED)
-    return float(np.clip(FINGER_OPEN + frac * (FINGER_CLOSED - FINGER_OPEN),
-                         FINGER_CLOSED, FINGER_OPEN))
+    """Joint coordinate that opens the jaws to `gap_m`.
+
+    Refuses rather than clamping. Silently clamping a too-wide request to the
+    fully open position produces a hand that closes on nothing and a task that
+    reports success while the object never moves -- which is the failure this
+    whole exercise has been chasing.
+    """
+    if gap_m > MAX_GRASP_WIDTH:
+        raise GraspTooWide(
+            f"asked for a {gap_m * 1000:.1f} mm opening but the YAM's jaws max "
+            f"out at {MAX_GRASP_WIDTH * 1000:.1f} mm. This object cannot be "
+            f"grasped by this gripper -- it is a task feasibility question, not "
+            f"something to clamp away."
+        )
+    frac = (gap_m - GAP_CLOSED) / (GAP_OPEN - GAP_CLOSED)
+    return float(np.clip(FINGER_CLOSED + frac * (FINGER_OPEN - FINGER_CLOSED),
+                         FINGER_OPEN, FINGER_CLOSED))
 
 
 def quat_to_matrix(q: np.ndarray) -> np.ndarray:

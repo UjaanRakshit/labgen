@@ -60,8 +60,8 @@ from newton.viewer import ViewerGL
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from arm_drive import configure_drives                                   # noqa: E402
 from arm_ik import lerp_path                                             # noqa: E402
-from grasp import (GraspFK, N_ARM, finger_q_for_gap, quat_to_matrix,     # noqa: E402
-                   solve_grasp_ik, with_fingers)
+from grasp import (GraspFK, MAX_GRASP_WIDTH, N_ARM, finger_q_for_gap,    # noqa: E402
+                   quat_to_matrix, solve_grasp_ik, with_fingers)
 
 sys.path.insert(0, "/mnt/c/Ujaan Docx/Research/labgen")
 from labgen.catalog import CATALOG                                       # noqa: E402
@@ -208,6 +208,11 @@ def pick_and_place(pl, obj, grasp_kp, place_xy, surface_z):
     kp_z = float(keypoint_local(pl.scene, obj, grasp_kp)[2])
     grasp = pl.where[obj] + keypoint_local(pl.scene, obj, grasp_kp)
     width = outer_width(obj, pl.scene)
+    if width > MAX_GRASP_WIDTH:
+        raise SystemExit(
+            f"{obj} is {width * 1000:.0f} mm across and the jaws open to "
+            f"{MAX_GRASP_WIDTH * 1000:.0f} mm. Not a planning problem -- this "
+            f"gripper cannot pick this object up.")
     place = np.array([place_xy[0], place_xy[1], surface_z + kp_z + PLACE_CLEARANCE])
     print(f"  {obj} ({width * 1000:.0f} mm) {grasp_kp} -> base on z={surface_z:.3f}, "
           f"fingertip ({place[0]:+.3f}, {place[1]:+.3f}, {place[2]:.3f})")
@@ -216,7 +221,7 @@ def pick_and_place(pl, obj, grasp_kp, place_xy, surface_z):
     above = np.array([grasp[0], grasp[1], TRANSIT_Z])
     over = np.array([place[0], place[1], TRANSIT_Z])
 
-    pl.set_fingers(0.089, 0.4, f"{obj}: open")
+    pl.set_fingers(MAX_GRASP_WIDTH, 0.4, f"{obj}: open")
     pl.move_to(above, 1.4, f"{obj}: over object")
     pl.move_to(grasp, 1.0, f"{obj}: descend")
     # Close to the object's actual width, with no squeeze.
@@ -231,7 +236,7 @@ def pick_and_place(pl, obj, grasp_kp, place_xy, surface_z):
     pl.move_to(above, 1.0, f"{obj}: lift")
     pl.move_to(over, 1.6, f"{obj}: carry")
     pl.move_to(place, 1.1, f"{obj}: lower")
-    pl.set_fingers(0.089, 0.5, f"{obj}: release", release=True)
+    pl.set_fingers(MAX_GRASP_WIDTH, 0.5, f"{obj}: release", release=True)
     pl.hold(0.25)
     pl.move_to(over, 0.9, f"{obj}: withdraw")
 
