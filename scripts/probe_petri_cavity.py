@@ -38,13 +38,21 @@ def run(collider):
         p = usda.write_scene(SceneSpec.read("/tmp/pc.json"), f"/tmp/pc_{collider}.usda").as_posix()
     finally:
         CATALOG["petri_dish_100"] = orig
-    b = newton.ModelBuilder(); r = b.add_usd(p); m = b.finalize()
+    b = newton.ModelBuilder(); r = b.add_usd(p)
+    # Same contact settings the settle test now uses. A stiffness change must
+    # not be allowed to seal a vessel the way convex_decomposition did -- that
+    # trap is the reason this probe exists.
+    import numpy as _np
+    for i in range(b.shape_count):
+        b.shape_material_ke[i] = 160000.0
+        b.shape_material_kd[i] = 2.0 * _np.sqrt(160000.0)
+    m = b.finalize()
     paths = {v:k for k,v in r["path_body_map"].items()}
     idx = {paths[i].replace("/World/",""): i for i in range(m.body_count)}
     s0,s1 = m.state(), m.state(); c = m.control()
     solver = newton.solvers.SolverMuJoCo(m, iterations=100, ls_iterations=50)
-    for _ in range(int(2.5*240)):
-        ct = m.collide(s0); solver.step(s0,s1,c,ct,1/240); s0,s1=s1,s0
+    for _ in range(int(2.5*960)):
+        ct = m.collide(s0); solver.step(s0,s1,c,ct,1/960); s0,s1=s1,s0
         if not np.isfinite(s0.body_q.numpy()).all(): print(f"{collider}: DIVERGED"); return
     z = s0.body_q.numpy()[idx["probe"], 2]
     verdict = ("INSIDE the dish" if z < 0.013 else

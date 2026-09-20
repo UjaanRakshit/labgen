@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from labgen.settle import (SETTLE_DT, SETTLE_SECONDS, SETTLE_TOLERANCE_M,
+from labgen.settle import (CONTACT_KD, CONTACT_KE, SETTLE_DT, SETTLE_SECONDS,
+                           SETTLE_TOLERANCE_M,
                            BackendUnavailable, BodyMotion, NewtonBackend,
                            SettleResult, settle)
 
@@ -53,15 +54,22 @@ def test_defaults_are_what_claude_md_specifies():
     assert SETTLE_TOLERANCE_M == 0.002
 
 
-def test_timestep_is_pinned():
-    """1/240 is measured, not conventional.
+def test_contact_stiffness_and_timestep_are_pinned_together():
+    """They are one setting, not two, and were measured as a grid.
 
-    On bench_arm the worst settle displacement is 1.25 mm at 1/240, 3.43 mm at
-    1/480 and 3.56 mm at 1/960. MuJoCo's soft-contact equilibrium is
-    time-scaled, so a smaller step moves where things come to rest. If the
-    timestep drifts the tolerance stops meaning anything.
+    A penetration-based contact is stable only while the stiffness is small
+    relative to what the timestep can integrate, so sweeping either alone finds
+    an optimum that is an artifact of the other's fixed value. This project
+    made that mistake in both directions before running the 2D sweep: at the
+    default ke=2500 a smaller timestep looked strictly worse, and at dt=1/240
+    more stiffness looked like it helped then hurt.
+
+    Pinned as a pair so nobody "optimises" one of them in isolation and
+    reintroduces a sink the tolerance will not catch.
     """
-    assert SETTLE_DT == pytest.approx(1.0 / 240.0)
+    assert SETTLE_DT == pytest.approx(1.0 / 960.0)
+    assert CONTACT_KE == pytest.approx(160_000.0)
+    assert CONTACT_KD == pytest.approx(800.0)
 
 
 # --- pass / fail arithmetic ----------------------------------------------
@@ -158,18 +166,36 @@ def test_backend_name_reaches_the_report(usda):
 
 # --- known open failure, pinned ------------------------------------------
 
-def test_petri_dish_is_the_known_settle_failure():
-    """Recorded so it cannot be quietly forgotten or quietly "fixed".
+def test_the_petri_dish_fix_did_not_seal_the_vessel():
+    """The settle test passes now. This guards HOW it was made to pass.
 
-    petri_dish_100 sinks 8.4 mm in 2 s against a 2 mm gate, in both reference
-    scenes. It is NOT an SDF resolution problem -- the sink is bit-identical
-    across authored voxel sizes of 1.6/0.8/0.4 mm and with the SDF schema
-    removed entirely -- so it is contact softness in the solver.
+    Two routes took the petri dish from an 8.4 mm sink to under a millimetre.
+    One of them seals the dish: switching it to convex_decomposition reaches
+    0.01 mm while a tube dropped in comes to rest on the rim at z=23 mm instead
+    of the floor. The other raises contact stiffness and shrinks the timestep,
+    after which the same tube rests ON the dish floor at 7.89 mm -- physically
+    more correct than the 0.02 mm it reached before, where it was passing
+    through the floor entirely.
 
-    The tempting fix, convex_decomposition, drops it to 0.01 mm and seals the
-    dish: a tube dropped in then rests on the rim at z=23 mm instead of the
-    floor at z=0.02 mm. check_colliders now rejects that, which is why this
-    stays open rather than being made green.
+    The collider must therefore still be sdf. A green gate is not evidence on
+    its own; it was only trustworthy here because the cavity was checked
+    separately (scripts/probe_petri_cavity.py).
     """
     from labgen.catalog import CATALOG
     assert CATALOG["petri_dish_100"].collider == "sdf"
+
+
+def test_sinking_was_never_a_single_object_problem():
+    """Recorded because the first report framed it as "the petri dish fails".
+
+    Measured across every catalog vessel on its own, the sink correlated with
+    contact pressure at r = -0.76 -- NEGATIVELY, so the least-loaded object
+    sank most, which is not what compliance does. All five beakers sank ~1.25 mm
+    across a 13x mass range: a fixed artifact, not load-dependent penetration.
+    The beaker was passing the 2 mm gate by 0.7 mm of luck while exhibiting the
+    same defect as the object that failed it.
+
+    The lesson is about the gate, not the dish: a tolerance that one object
+    clears and another does not can be hiding a single shared failure.
+    """
+    assert SETTLE_TOLERANCE_M == 0.002

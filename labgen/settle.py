@@ -34,18 +34,49 @@ __all__ = [
     "SETTLE_SECONDS",
     "SETTLE_TOLERANCE_M",
     "SETTLE_DT",
+    "CONTACT_KE",
+    "CONTACT_KD",
 ]
 
 # CLAUDE.md: step 2 seconds with no actuation; nothing moves more than 2 mm.
 SETTLE_SECONDS = 2.0
 SETTLE_TOLERANCE_M = 0.002
 
-# 1/240 s. Measured, not conventional: on bench_arm the worst settle
-# displacement is 1.25 mm at 1/240, 3.43 mm at 1/480 and 3.56 mm at 1/960
-# (scripts/probe_dt.py). Smaller is not better here -- MuJoCo's soft-contact
-# equilibrium is time-scaled, so shrinking the step changes where objects come
-# to rest. Pinning it makes the tolerance mean something.
-SETTLE_DT = 1.0 / 240.0
+# Contact stiffness and timestep, measured together (scripts/probe_ke_dt.py).
+#
+# These are one setting, not two. A penetration-based contact is stable only
+# while the stiffness is small relative to what the timestep can integrate, so
+# sweeping either alone finds an optimum that is an artifact of the other's
+# fixed value. Both earlier one-dimensional findings were exactly that:
+#
+#     ke = 2500 (the import default), sweeping dt:
+#         1/120 -> 4.88 mm   1/240 -> 8.76   1/960 -> 10.57
+#         ...from which "1/240 is best, smaller is worse" -- true, and only
+#         because the stiffness was far too low to resolve the contact at all.
+#
+#     dt = 1/240, sweeping ke:
+#         2500 -> 8.76 mm    10000 -> 1.29    50000 -> 17.47
+#         ...from which "stiffness helps then hurts" -- the rise at the end is
+#         the timestep failing to integrate a stiffer contact, not a limit.
+#
+# Moved together the surface is monotone and the answer is unambiguous:
+#
+#     ke = 160000, dt = 1/960  ->  petri 0.09 mm
+#                                  beaker -0.01, test tube 0.00,
+#                                  erlenmeyer -0.01, cylinder -0.00
+#
+# 160 kN/m is also the physically honest direction: glass on a steel benchtop is
+# far stiffer than the 2500 N/m the importer defaults to, so this is less
+# fudge than the default was.
+#
+# Verified not to have bought a green gate with a broken vessel
+# (scripts/probe_petri_cavity.py): a tube dropped into the petri dish now rests
+# ON its floor at 7.89 mm rather than passing through it to 0.02 mm. The fix
+# made the cavity MORE correct, not less. That check is not optional here --
+# convex_decomposition also takes this gate to 0.01 mm, by sealing the dish.
+SETTLE_DT = 1.0 / 960.0
+CONTACT_KE = 160_000.0
+CONTACT_KD = 800.0          # ~2*sqrt(ke), near critical for these masses
 
 
 class BackendUnavailable(RuntimeError):
@@ -138,6 +169,15 @@ class NewtonBackend:
 
         builder = newton.ModelBuilder()
         info = builder.add_usd(str(usda))
+
+        # Contact stiffness is applied here rather than authored into the USD:
+        # it is a property of how this solver integrates, not of the objects.
+        # Baking it into the scene would make the asset carry one backend's
+        # tuning around with it.
+        for i in range(builder.shape_count):
+            builder.shape_material_ke[i] = CONTACT_KE
+            builder.shape_material_kd[i] = CONTACT_KD
+
         model = builder.finalize()
         paths = {v: k for k, v in info["path_body_map"].items()}
 
