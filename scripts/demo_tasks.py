@@ -219,8 +219,14 @@ def pick_and_place(pl, obj, grasp_kp, place_xy, surface_z):
     pl.set_fingers(0.089, 0.4, f"{obj}: open")
     pl.move_to(above, 1.4, f"{obj}: over object")
     pl.move_to(grasp, 1.0, f"{obj}: descend")
-    pl.set_fingers(max(width - 0.004, 0.006), 0.6, f"{obj}: close",
-                   attach=(obj, grasp_kp))
+    # Close to the object's actual width, with no squeeze.
+    #
+    # A contact grasp wants a few mm of interference so the fingers load the
+    # object. A kinematic hold has no contact to resolve that interference, so
+    # the squeeze becomes pure geometry clipping -- the pads visibly cut into
+    # the glass and the grasp looks fake even though the numbers are right.
+    # Restore the squeeze if GRASP_MODE ever goes back to contact.
+    pl.set_fingers(max(width, 0.006), 0.6, f"{obj}: close", attach=(obj, grasp_kp))
     pl.hold(0.25)
     pl.move_to(above, 1.0, f"{obj}: lift")
     pl.move_to(over, 1.6, f"{obj}: carry")
@@ -335,7 +341,7 @@ def main() -> int:
                 # released 90 mm above where the plan said. Both the grasp and
                 # the place use a top-down approach, so a world-frame offset is
                 # exactly right here and cannot tip the glassware in mid-air.
-                tip_mid = 0.5 * (bq[-1, :3] + bq[-2, :3])
+                tip_mid = fk.grasp_point_from_state(bq)
                 held = (bi, bq[bi, :3] - tip_mid, bq[bi, 3:].copy())
                 print(f"   [{i}] attached {name}")
             else:
@@ -367,7 +373,7 @@ def main() -> int:
         if held is not None:
             bi, offset, quat = held
             bq_now = s0.body_q.numpy()
-            pos = 0.5 * (bq_now[-1, :3] + bq_now[-2, :3]) + offset
+            pos = fk.grasp_point_from_state(bq_now) + offset
             jq = s0.joint_q.numpy()
             jq[7 * bi: 7 * bi + 3] = pos
             jq[7 * bi + 3: 7 * bi + 7] = quat

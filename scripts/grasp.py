@@ -66,6 +66,46 @@ class GraspFK:
         self.state = model.state()
         self._q = model.joint_q.numpy().copy()
 
+        # Where the fingers actually are, in each tip body's own frame.
+        #
+        # The obvious grasp point -- the midpoint of the two tip BODY origins --
+        # is wrong by 36 mm along the approach axis, because a body origin is a
+        # joint location and has nothing to do with where the geometry sits.
+        # The YAM's tip STL lives at z -219..-126 mm in its own file frame and
+        # the URDF <origin> moves it again. Using the origins pinned every
+        # carried object about 5 cm behind the pads, level with the wrist, which
+        # is exactly what it looked like on screen.
+        #
+        # So: take each tip's collision mesh, push it through its shape
+        # transform into body-local coordinates once, and keep the centroid.
+        # Applying the body transform to that each call is cheap and exact.
+        self._tip_local = self._tip_centroids()
+
+    def _tip_centroids(self) -> list[tuple[int, np.ndarray]]:
+        model = self.model
+        shape_body = model.shape_body.numpy()
+        shape_xf = model.shape_transform.numpy()
+        out: dict[int, list[np.ndarray]] = {}
+        for i in range(model.shape_count):
+            bi = int(shape_body[i])
+            if bi not in (model.body_count - 1, model.body_count - 2):
+                continue
+            geo = model.shape_source[i]
+            if geo is None or not hasattr(geo, "vertices"):
+                continue
+            v = np.asarray(geo.vertices, dtype=float)
+            xf = shape_xf[i]
+            v = v @ quat_to_matrix(xf[3:]).T + xf[:3]
+            out.setdefault(bi, []).append(v.mean(axis=0))
+        if len(out) != 2:
+            # No usable tip geometry (e.g. the arm was imported visual-only and
+            # the shapes were dropped). Fall back to the body origins and say so
+            # rather than silently grasping 36 mm off.
+            print("   GraspFK: no tip geometry found; falling back to body "
+                  "origins (grasp point will be ~36 mm behind the pads)")
+            return []
+        return [(bi, np.mean(c, axis=0)) for bi, c in sorted(out.items())]
+
     def _eval(self, q_arm: np.ndarray) -> np.ndarray:
         q = self._q.copy()
         full = np.zeros(N_ARM + N_FINGER)
@@ -75,10 +115,16 @@ class GraspFK:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
         return self.state.body_q.numpy()
 
+    def _grasp_from(self, bodies: np.ndarray) -> np.ndarray:
+        if not self._tip_local:
+            return 0.5 * (bodies[-1, :3] + bodies[-2, :3])
+        pts = [quat_to_matrix(bodies[bi, 3:]) @ c + bodies[bi, :3]
+               for bi, c in self._tip_local]
+        return 0.5 * (pts[0] + pts[1])
+
     def grasp_point(self, q_arm: np.ndarray) -> np.ndarray:
-        """Midpoint between the fingertips -- where a grasp actually happens."""
-        bodies = self._eval(q_arm)
-        return 0.5 * (bodies[-1, :3] + bodies[-2, :3])
+        """Where the fingers actually close -- the centroid of the pad geometry."""
+        return self._grasp_from(self._eval(q_arm))
 
     def approach_axis(self, q_arm: np.ndarray) -> np.ndarray:
         """The gripper's +Z in world.
@@ -93,9 +139,12 @@ class GraspFK:
 
     def pose(self, q_arm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         bodies = self._eval(q_arm)
-        point = 0.5 * (bodies[-1, :3] + bodies[-2, :3])
         axis = quat_to_matrix(bodies[-3, 3:]) @ np.array([0.0, 0.0, 1.0])
-        return point, axis
+        return self._grasp_from(bodies), axis
+
+    def grasp_point_from_state(self, body_q: np.ndarray) -> np.ndarray:
+        """Same thing, but from a simulated state rather than an FK evaluation."""
+        return self._grasp_from(body_q)
 
 
 def forward(fk: GraspFK, q: np.ndarray, with_axis: bool, w_axis: float) -> np.ndarray:
