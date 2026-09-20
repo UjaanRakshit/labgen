@@ -46,7 +46,8 @@ this pipeline feeds a system that will eventually produce trust numbers.
 | `types.py`        | the artifacts stages pass between each other      | T0 ✅ |
 | `meshes.py`       | `CatalogItem` → watertight triangle mesh (OBJ)    | T1 ✅ |
 | `usda.py`         | `SceneSpec` → `.usda` with UsdPhysics schemas     | T2 ✅ |
-| `validate.py`     | the gates, including the settle test              | T3 |
+| `validate.py`     | the geometric gates                               | T3 ✅ |
+| `settle.py`       | the settle test, behind a backend interface       | T3 ✅ |
 | `isaaclab_cfg.py` | `SceneSpec` → `InteractiveSceneCfg`               | T4 |
 | `register.py`     | reconstruction frame → robot base frame           | T5 |
 | `identify.py`     | video → `[ObjectObservation]` (VLM)               | T6 |
@@ -89,6 +90,37 @@ number, so it marks bad entries as good. The seed catalog shipped five wrong
 dimensions all flagged `verified=True`. Every entry is currently `verified=False`
 with a `source` naming what needs checking.
 
+## The gates
+
+`labgen.validate` runs nine checks with numpy and the catalog alone — no GPU,
+no Isaac, milliseconds:
+
+`provenance` · `scale` · `support` · `interpenetration` · `physics` ·
+`collider` · `reachability` · `graspable` · `grasp_keypoint`
+
+The last two are not in CLAUDE.md's list and belong there. `graspable` compares
+each object against the gripper's measured 94 mm jaw stroke; `grasp_keypoint`
+wants a keypoint near the rim of an open vessel, because grasping a beaker at
+mid-height buries the hand 30 mm into the glass. Both were learned by doing it
+wrong.
+
+Every finding carries the measured value and the limit. "beaker fails scale" is
+useless at 2am; "x extent 84.0 mm against catalog 70.0 mm, 20% over a 5%
+tolerance" tells you whether to fix the scene or the catalog.
+
+**What `scale` can and cannot catch.** For a catalog object the mesh is
+*generated from* the catalog, so the check compares the catalog against itself:
+it catches a generator regression and nothing else. Inflating a catalog entry
+by 20% inflates the mesh by 20% and sails straight through. That is the
+two-checks rule, not a hole — "is the mesh right for these numbers" and "are
+these numbers right" have different fixes, and the second one is `source` /
+`verified` and ultimately a spec sheet. Pinned as a test so nobody converts it
+into a tautology that appears to catch catalog errors.
+
+`labgen.settle` is separate because it needs a physics engine. A missing
+backend **raises**; it never returns a vacuous pass. A settle test that quietly
+does nothing is worse than none, because the report still reads green.
+
 ## Known gaps
 
 Things that are **not** covered, recorded so a later stage does not assume they
@@ -99,8 +131,8 @@ are:
   ratio). Both racks build, but both have unsourced footprints, so neither
   belongs in the reference scene yet. T3's collider checks are untested against
   a decomposed collider.
-- **The petri dish fails the settle test.** It sinks 8.43 mm in 2 s with no
-  actuation, against CLAUDE.md's 2 mm gate. This is *not* an SDF resolution
+- **The petri dish fails the settle test** — the one gate currently red. It
+  sinks 8.43 mm in 2 s with no actuation, against CLAUDE.md's 2 mm gate. This is *not* an SDF resolution
   problem — the sink is bit-identical across authored voxel sizes of 1.6, 0.8
   and 0.4 mm and with the SDF schema removed entirely, so it is contact
   softness in the solver, not collider fidelity. Solver contact parameters need
