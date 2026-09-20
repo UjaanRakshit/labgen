@@ -30,11 +30,11 @@ configure_drives(b,dof_slice=dofs,n_fingers=2,verbose=False)
 m=b.finalize(); fk=GraspFK(m,coords)
 paths={v:k for k,v in r["path_body_map"].items()}
 bk=[i for i in range(4) if paths[i].endswith("beaker")][0]
-kp=np.asarray(CATALOG["beaker_250"].keypoints["body_grasp"])
+kp=np.asarray(CATALOG["beaker_250"].keypoints["rim_grasp"])
 g=np.asarray(scene.by_id("beaker").position)+kp
 qa,_,_,_=solve_grasp_ik(fk,g+[0,0,0.16],lo,hi,approach=DOWN)
 qg,_,_,_=solve_grasp_ik(fk,g,lo,hi,approach=DOWN,seed=qa)
-gq=finger_q_for_gap(0.066)
+gq=finger_q_for_gap(0.070)
 path=([with_fingers(qa,0.0)]*20+lerp_path([with_fingers(qa,0.0),with_fingers(qg,0.0)],[1.2],FPS)
      +lerp_path([with_fingers(qg,0.0),with_fingers(qg,gq)],[0.6],FPS)+[with_fingers(qg,gq)]*15
      +lerp_path([with_fingers(qg,gq),with_fingers(qa,gq)],[1.2],FPS)+[with_fingers(qa,gq)]*40)
