@@ -1,16 +1,272 @@
-"""SceneSpec -> Isaac Lab InteractiveSceneCfg.
+"""SceneSpec -> an Isaac Lab InteractiveSceneCfg, emitted as Python source.
 
-Not implemented. See TASKS.md T4.
+Emitted as text, not built by importing `isaaclab`, for the same reason
+`usda.py` does not import `pxr`: labgen core has to stay importable in CI
+without a GPU. The generated module imports Isaac Lab; this one never does.
+
+Backend-agnostic by construction. Everything referenced here --
+`InteractiveSceneCfg`, `ArticulationCfg`, `RigidObjectCfg`,
+`ImplicitActuatorCfg` -- is Isaac Lab 3.0's abstract layer, which runs on
+PhysX or Newton unchanged. No `physx.*` or `newton.*` symbol appears in the
+output. CLAUDE.md is explicit that the scene generator must not care which
+engine is underneath.
+
+Two conventions worth stating, because both are easy to get silently wrong:
+
+* **Isaac Lab 3.0 stores rotations as (x, y, z, w)**, identity (0, 0, 0, 1).
+  `SceneSpec` stores (w, x, y, z). They are reordered here. Checked against
+  `AssetBaseCfg.InitialStateCfg` rather than assumed -- an earlier bug in this
+  project wrote a quaternion in the wrong layout and produced a file that no
+  implementation would open.
+* **Objects are not re-spawned.** The scene `.usda` is spawned once, and each
+  dynamic object is declared with `spawn=None` and a prim path pointing into
+  it. `AssetBaseCfg.spawn` documents this: "If None, then no prims are spawned
+  ... it is assumed that the asset is already present in the scene." Spawning
+  each object separately would duplicate the geometry and silently discard the
+  physics authored in the USD.
 """
 
 from __future__ import annotations
 
-_TASK = "T4"
+import textwrap
+from pathlib import Path
+
+from .types import SceneObject, SceneSpec
+from .validate import YAM, RobotSpec
+
+__all__ = ["emit_scene_cfg", "write_scene_cfg", "ArmSource", "YAM_ARM"]
 
 
-def _not_yet(what: str):
-    raise NotImplementedError(
-        f"{what} is not implemented yet -- {_TASK}. "
-        f"Stages are built in the order given in TASKS.md; building this one "
-        f"early means there is nothing to check its output against."
-    )
+class ArmSource:
+    """Where the robot model comes from, and how to import it.
+
+    TASKS.md asks whether the Isaac Lab path wants USD or can take MJCF
+    directly. Answer: directly. Isaac Lab 3.0 ships `MjcfFileCfg` and
+    `UrdfFileCfg` spawners that run the converter for you, so there is no
+    converter to write.
+    """
+
+    def __init__(self, path: str, *, kind: str = "mjcf", fix_base: bool = True,
+                 collision_from_visuals: bool = True,
+                 collision_type: str = "Convex Decomposition",
+                 joint_expr: str = ".*", note: str = ""):
+        if kind not in ("mjcf", "urdf", "usd"):
+            raise ValueError(f"unknown arm source kind {kind!r}")
+        self.path = path
+        self.kind = kind
+        self.fix_base = fix_base
+        self.collision_from_visuals = collision_from_visuals
+        self.collision_type = collision_type
+        self.joint_expr = joint_expr
+        self.note = note
+
+
+# Defaults carrying what this project measured, each with its provenance, so a
+# reader can challenge them instead of inheriting them.
+YAM_ARM = ArmSource(
+    path="i2rt/robot_models/arm/yam/v1/yam.xml",
+    kind="mjcf",
+    fix_base=True,
+    # The YAM ships NO collision geometry: yam.urdf has nine <visual> elements
+    # and zero <collision>. Without this the arm renders perfectly and touches
+    # nothing -- measured at 0 contacts out of 109.
+    collision_from_visuals=True,
+    # NOT the "Convex Hull" default. The fingertip is an L-shaped wedge whose
+    # hull spans +/-36 mm, so two hulled fingers engulf a 70 mm beaker and the
+    # solver ejects it. Decomposition follows the concavity.
+    collision_type="Convex Decomposition",
+    note="i2rt YAM, arm-only MJCF (6 dof). The URDF adds two finger joints but "
+         "declares effort=1 N.m on every joint, which Isaac will honour over "
+         "anything configured here.",
+)
+
+
+def _quat_xyzw(obj: SceneObject) -> tuple[float, float, float, float]:
+    """SceneSpec's (w, x, y, z) -> Isaac Lab's (x, y, z, w)."""
+    w, x, y, z = obj.orientation_wxyz
+    return (x, y, z, w)
+
+
+def _fmt3(v) -> str:
+    return "(" + ", ".join(f"{float(c):.6g}" for c in v) + ")"
+
+
+def _ident(name: str) -> str:
+    out = "".join(c if (c.isalnum() or c == "_") else "_" for c in name)
+    return f"_{out}" if not out or out[0].isdigit() else out
+
+
+def emit_scene_cfg(scene: SceneSpec, *, usda_path: str | Path,
+                   arm: ArmSource | None = YAM_ARM,
+                   robot: RobotSpec = YAM,
+                   class_name: str | None = None) -> str:
+    """Render an importable Isaac Lab scene config for `scene`."""
+    cls = class_name or f"{_ident(scene.name).title().replace('_', '')}SceneCfg"
+    usda_path = Path(usda_path).as_posix()
+
+    unsourced = sorted(o.instance_id for o in scene.objects
+                       if o.catalog_item() is not None and not o.catalog_item().verified)
+
+    head = textwrap.dedent(f'''\
+        """Generated by labgen from SceneSpec {scene.name!r}. Do not edit by hand.
+
+        Regenerate with `labgen.isaaclab_cfg.write_scene_cfg`; edit the
+        SceneSpec JSON instead, which is the artifact meant to be hand-edited.
+
+        Units are metres and kilograms, Z-up. Object poses are in the robot base
+        frame {scene.robot_base_frame!r}, and the robot sits at that frame's
+        origin -- so every pose below is directly what the arm sees.
+
+        Objects whose dimensions are not sourced: {", ".join(unsourced) if unsourced else "none"}.
+        An unsourced object has no spec sheet behind its size; do not use this
+        scene for a trust-bearing evaluation until that list is empty.
+
+        Backend-agnostic: only Isaac Lab's abstract asset and actuator
+        interfaces are used, so this runs on PhysX or Newton unchanged.
+        """
+
+        from __future__ import annotations
+
+        import isaaclab.sim as sim_utils
+        from isaaclab.actuators import ImplicitActuatorCfg
+        from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
+        from isaaclab.scene import InteractiveSceneCfg
+        from isaaclab.utils import configclass
+
+        # Path to the .usda labgen emitted for this scene. Relative paths are
+        # resolved against wherever the sim is launched from, so an absolute
+        # path is usually what you want here.
+        SCENE_USD = "{usda_path}"
+        ''')
+
+    body: list[str] = []
+    if arm is not None:
+        body.append(_emit_arm(arm, robot))
+
+    body.append(f"@configclass\nclass {cls}(InteractiveSceneCfg):")
+    body.append('    """The bench, its contents, and the arm."""\n')
+    body.append(textwrap.indent(textwrap.dedent('''\
+        # The whole scene is spawned ONCE from the emitted USD, which already
+        # carries the colliders, masses and physics materials. The per-object
+        # entries below attach to those prims rather than spawning again.
+        scene: AssetBaseCfg = AssetBaseCfg(
+            prim_path="{ENV_REGEX_NS}/Scene",
+            spawn=sim_utils.UsdFileCfg(usd_path=SCENE_USD),
+        )
+
+        light: AssetBaseCfg = AssetBaseCfg(
+            prim_path="/World/light",
+            spawn=sim_utils.DomeLightCfg(intensity=2500.0),
+        )
+        '''), "    "))
+
+    for obj in scene.objects:
+        item = obj.catalog_item()
+        if item is None:
+            continue
+        name = _ident(obj.instance_id)
+        pos, rot = _fmt3(obj.position), _fmt3(_quat_xyzw(obj))
+        sourced = "sourced" if item.verified else "UNSOURCED dimensions"
+        if obj.fixed:
+            body.append(textwrap.indent(textwrap.dedent(f'''\
+                # {item.display_name} -- static fixture, {sourced}
+                {name}: AssetBaseCfg = AssetBaseCfg(
+                    prim_path="{{ENV_REGEX_NS}}/Scene/{name}",
+                    spawn=None,
+                    init_state=AssetBaseCfg.InitialStateCfg(pos={pos}, rot={rot}),
+                )
+                '''), "    "))
+        else:
+            body.append(textwrap.indent(textwrap.dedent(f'''\
+                # {item.display_name} -- {item.mass_kg} kg, collider {item.collider}, {sourced}
+                {name}: RigidObjectCfg = RigidObjectCfg(
+                    prim_path="{{ENV_REGEX_NS}}/Scene/{name}",
+                    spawn=None,
+                    init_state=RigidObjectCfg.InitialStateCfg(pos={pos}, rot={rot}),
+                )
+                '''), "    "))
+
+    if arm is not None:
+        body.append("    robot: ArticulationCfg = ARM_CFG.replace(\n"
+                    '        prim_path="{ENV_REGEX_NS}/Robot")\n')
+
+    return head + "\n\n" + "\n".join(body)
+
+
+def _emit_arm(arm: ArmSource, robot: RobotSpec) -> str:
+    """Build the articulation config line by line at an explicit depth.
+
+    Not by nesting textwrap.dedent around an interpolated multi-line block.
+    dedent computes a common prefix over the text AFTER interpolation, so a
+    substituted block with its own indentation silently shifts everything --
+    which is how this emitted a file that would not parse. usda.py carries the
+    same note for the same reason; I repeated the mistake here anyway.
+    """
+    lines: list[str] = [f"# Robot: {robot.name}."]
+    if arm.note:
+        for chunk in textwrap.wrap(arm.note, 74):
+            lines.append(f"# {chunk}")
+    lines += [
+        "#",
+        f"# Reach {robot.reach_min_m:.2f}-{robot.reach_max_m:.2f} m; jaws open to "
+        f"{robot.jaw_opening_m * 1000:.0f} mm.",
+        f"# Source: {robot.source}",
+        "#",
+        "# WARNING -- the effort limit below is ABOVE the robot's rating.",
+        "# Holding a 0.40 m top-down pose needs about 20 N.m at the shoulder; the",
+        "# YAM's actuatorfrcrange is +/-10. At 10 it sags 48.7 deg and the",
+        "# fingertip lands 317 mm from target. Either the model overstates the",
+        "# arm's inertia, or a YAM cannot hold that pose on joint torque alone --",
+        "# in which case a task laid out at this reach is one the hardware cannot",
+        "# do, and a success rate measured for it would describe something the",
+        "# real robot never could. Resolve before this feeds a trust number.",
+        "ARM_CFG = ArticulationCfg(",
+        '    prim_path="{ENV_REGEX_NS}/Robot",',
+    ]
+
+    if arm.kind == "usd":
+        lines += ["    spawn=sim_utils.UsdFileCfg(",
+                  f'        usd_path="{arm.path}",', "    ),"]
+    else:
+        cls = "MjcfFileCfg" if arm.kind == "mjcf" else "UrdfFileCfg"
+        lines += [
+            f"    spawn=sim_utils.{cls}(",
+            f'        asset_path="{arm.path}",',
+            f"        fix_base={arm.fix_base},",
+            "        # The YAM ships no <collision> geometry at all, so colliders",
+            "        # must come from the visual meshes. Measured: 0 arm contacts",
+            "        # out of 109 without this.",
+            f"        collision_from_visuals={arm.collision_from_visuals},",
+            '        # NOT the "Convex Hull" default: the fingertip is an L-shaped',
+            "        # wedge whose hull spans +/-36 mm, so two hulled fingers",
+            "        # swallow a 70 mm beaker and the solver ejects it.",
+            f'        collision_type="{arm.collision_type}",',
+            "    ),",
+        ]
+
+    lines += [
+        "    init_state=ArticulationCfg.InitialStateCfg(",
+        "        pos=(0.0, 0.0, 0.0),        # the robot base frame origin",
+        "        rot=(0.0, 0.0, 0.0, 1.0),   # Isaac Lab 3.0 is (x, y, z, w)",
+        f'        joint_pos={{"{arm.joint_expr}": 0.0}},',
+        "    ),",
+        "    actuators={",
+        '        "arm": ImplicitActuatorCfg(',
+        f'            joint_names_expr=["{arm.joint_expr}"],',
+        "            stiffness=3000.0,",
+        "            damping=150.0,",
+        "            armature=0.02,",
+        "            joint_effort_limit=40.0,   # see WARNING above",
+        "        ),",
+        "    },",
+        ")",
+        "",
+    ]
+    return chr(10).join(lines)
+
+
+def write_scene_cfg(scene: SceneSpec, path: str | Path, **kwargs) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(emit_scene_cfg(scene, **kwargs), encoding="utf-8")
+    return path

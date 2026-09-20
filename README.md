@@ -48,7 +48,7 @@ this pipeline feeds a system that will eventually produce trust numbers.
 | `usda.py`         | `SceneSpec` → `.usda` with UsdPhysics schemas     | T2 ✅ |
 | `validate.py`     | the geometric gates                               | T3 ✅ |
 | `settle.py`       | the settle test, behind a backend interface       | T3 ✅ |
-| `isaaclab_cfg.py` | `SceneSpec` → `InteractiveSceneCfg`               | T4 |
+| `isaaclab_cfg.py` | `SceneSpec` → `InteractiveSceneCfg` (emitted as text) | T4 ✅ |
 | `register.py`     | reconstruction frame → robot base frame           | T5 |
 | `identify.py`     | video → `[ObjectObservation]` (VLM)               | T6 |
 | `fit.py`          | `ObjectObservation` → `SceneObject`               | T6 |
@@ -120,6 +120,34 @@ into a tautology that appears to catch catalog errors.
 `labgen.settle` is separate because it needs a physics engine. A missing
 backend **raises**; it never returns a vacuous pass. A settle test that quietly
 does nothing is worse than none, because the report still reads green.
+
+## Isaac Lab config
+
+`labgen.isaaclab_cfg` emits the scene config as Python **source**, the same way
+`usda.py` emits USD text — the emitter never imports `isaaclab`, so core stays
+CI-clean. Verified by `scripts/verify_cfg.py`, which imports the generated
+module inside Isaac Lab and instantiates the class. Parsing it with `ast` here
+proves only syntax; this project has already shipped one artifact its own
+reader loved and no real implementation would open.
+
+Answering TASKS.md's open T4 question: **Isaac Lab 3.0 takes MJCF and URDF
+directly** via `MjcfFileCfg` / `UrdfFileCfg`, which run the converter for you.
+There is no converter to write.
+
+Three settings in the generated file are load-bearing and all three were
+measured, not chosen:
+
+- `collision_from_visuals=True` — the YAM ships **zero** `<collision>`
+  elements, so without this the arm renders perfectly and touches nothing
+  (0 contacts out of 109).
+- `collision_type="Convex Decomposition"` — *not* the converter's `"Convex
+  Hull"` default, which turns each L-shaped fingertip into a block spanning
+  ±36 mm and swallows a 70 mm beaker.
+- `joint_effort_limit=40.0` — **above** the YAM's rated ±10 N·m, flagged as
+  such in the emitted file with the measurement behind it.
+
+Rotations are emitted `(x, y, z, w)`. Isaac Lab 3.0 changed from the older
+wxyz; `SceneSpec` stores wxyz and they are reordered.
 
 ## Known gaps
 
