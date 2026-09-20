@@ -194,6 +194,15 @@ class Planner:
 
 PLACE_CLEARANCE = 0.004   # set the base down just above the surface, never into it
 
+# Open the jaws this much wider than the object.
+#
+# Commanding exactly the object's width makes the flat inner faces tangent to a
+# round object, and tangency plus mesh discretisation leaves about 1.2 mm of one
+# jaw inside the glass. A contact grasp would WANT that interference; a
+# kinematic hold has nothing to resolve it, so it just renders as the finger
+# clipping through. 3 mm is enough to be visibly clear at this mesh resolution.
+GRASP_CLEARANCE = 0.003
+
 
 def pick_and_place(pl, obj, grasp_kp, place_xy, surface_z):
     """Grasp `obj` at `grasp_kp` and set its BASE down on `surface_z`.
@@ -231,7 +240,8 @@ def pick_and_place(pl, obj, grasp_kp, place_xy, surface_z):
     # the squeeze becomes pure geometry clipping -- the pads visibly cut into
     # the glass and the grasp looks fake even though the numbers are right.
     # Restore the squeeze if GRASP_MODE ever goes back to contact.
-    pl.set_fingers(max(width, 0.006), 0.6, f"{obj}: close", attach=(obj, grasp_kp))
+    pl.set_fingers(min(width + GRASP_CLEARANCE, MAX_GRASP_WIDTH), 0.6,
+                   f"{obj}: close", attach=(obj, grasp_kp))
     pl.hold(0.25)
     pl.move_to(above, 1.0, f"{obj}: lift")
     pl.move_to(over, 1.6, f"{obj}: carry")

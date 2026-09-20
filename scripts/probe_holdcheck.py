@@ -11,7 +11,7 @@ from PIL import Image
 sys.path.insert(0,"/home/ujaan/isaac/labgen"); sys.path.insert(0,"/mnt/c/Ujaan Docx/Research/labgen")
 from arm_drive import configure_drives
 from arm_ik import lerp_path
-from grasp import GraspFK, solve_grasp_ik, with_fingers, finger_q_for_gap, N_ARM
+from grasp import GraspFK, solve_grasp_ik, with_fingers, finger_q_for_gap, quat_to_matrix, N_ARM
 from labgen.catalog import CATALOG
 from labgen.types import SceneSpec
 DOWN=np.array([0,0,-1.0]); FPS=60; DT=1/240; SUB=4
@@ -34,7 +34,7 @@ kp=np.asarray(CATALOG["beaker_250"].keypoints["rim_grasp"])
 g=np.asarray(scene.by_id("beaker").position)+kp
 qa,_,_,_=solve_grasp_ik(fk,g+[0,0,0.16],lo,hi,approach=DOWN)
 qg,_,_,_=solve_grasp_ik(fk,g,lo,hi,approach=DOWN,seed=qa)
-gq=finger_q_for_gap(0.070)
+gq=finger_q_for_gap(0.073)
 path=([with_fingers(qa,0.0)]*20+lerp_path([with_fingers(qa,0.0),with_fingers(qg,0.0)],[1.2],FPS)
      +lerp_path([with_fingers(qg,0.0),with_fingers(qg,gq)],[0.6],FPS)+[with_fingers(qg,gq)]*15
      +lerp_path([with_fingers(qg,gq),with_fingers(qa,gq)],[1.2],FPS)+[with_fingers(qa,gq)]*40)
@@ -63,13 +63,21 @@ for i,cfg in enumerate(path):
         print(f"  f{i}: grasp_pt={np.round(gp,4)} obj_keypoint={np.round(kpw,4)} "
               f"-> {np.linalg.norm(gp-kpw)*1000:5.1f} mm apart")
         # close-up
-        look=gp; eye=look+np.array([0.16,-0.26,0.10])
-        d=look-eye
-        v.set_camera(tuple(float(x) for x in eye),
-                     math.degrees(math.atan2(d[2],float(np.hypot(d[0],d[1])))),
-                     math.degrees(math.atan2(d[1],d[0])))
-        v.begin_frame(i/FPS); v.log_state(s0); v.end_frame()
-        fr=v.get_frame(); arr=fr.numpy() if hasattr(fr,'numpy') else np.asarray(fr)
-        if arr.dtype!=np.uint8: arr=(np.clip(arr,0,1)*255).astype(np.uint8)
-        Image.fromarray(arr[:,:,:3]).save(f"closeup_{i}.png")
+        # Two views. The second looks ALONG the jaw closing axis, so the
+        # beaker sits between the two fingers in the image plane and there is
+        # no depth ambiguity about whether a finger is in front of the glass or
+        # inside it -- which is what made the earlier stills arguable.
+        bq=s0.body_q.numpy()
+        Rg=quat_to_matrix(bq[-3,3:])
+        close_ax = Rg @ np.array([1.0,0.0,0.0])
+        for tag,eye in (("iso", gp+np.array([0.16,-0.26,0.10])),
+                        ("axis", gp + 0.30*close_ax + np.array([0,0,0.02]))):
+            d=gp-eye
+            v.set_camera(tuple(float(x) for x in eye),
+                         math.degrees(math.atan2(d[2],float(np.hypot(d[0],d[1])))),
+                         math.degrees(math.atan2(d[1],d[0])))
+            v.begin_frame(i/FPS); v.log_state(s0); v.end_frame()
+            fr=v.get_frame(); arr=fr.numpy() if hasattr(fr,'numpy') else np.asarray(fr)
+            if arr.dtype!=np.uint8: arr=(np.clip(arr,0,1)*255).astype(np.uint8)
+            Image.fromarray(arr[:,:,:3]).save(f"closeup_{tag}_{i}.png")
 v.close()
