@@ -39,35 +39,36 @@ DEFAULT_KE = 3000.0
 DEFAULT_KD = 150.0
 DEFAULT_ARMATURE = 0.02
 
-# ---------------------------------------------------------------------------
-# ABOVE SPEC. The YAM's actuatorfrcrange is +/-10 N.m and this is 40.
+# RETRACTED: the arm runs inside its rated torque. It was a gain problem.
 #
-# Measured (scripts/probe_torque.py), holding the beaker's body_grasp pose at
-# a 0.40 m reach with the wrist pointing down:
+# This file previously ran at 40 N.m against the YAM's rated 10, on the
+# strength of a measurement showing the shoulder sagging 48.7 deg at 10. That
+# measurement was real and the conclusion drawn from it was wrong.
 #
-#     10 N.m  ->  joint2 sags 48.7 deg, fingertip 317 mm from target
-#     20 N.m  ->  joint2 holds to  1.9 deg, fingertip  17.6 mm
-#     40 N.m  ->  identical to 20, so ~20 N.m is where it saturates
+# Static gravity torque at the beaker-grasp pose, computed from the link masses
+# rather than inferred from a controller (scripts/probe_gravtorque.py):
 #
-# The shoulder needs roughly twice the robot's rated joint torque just to hold
-# station at this reach. Two readings, and they matter differently:
+#     j1 0.00   j2 7.26   j3 3.92   j4 0.16   j5 0.00   j6 0.00   N.m
+#     total arm mass 4.111 kg, reach 0.409 m
 #
-#   * the URDF's inertial data overstates the arm, or
-#   * a YAM genuinely cannot hold a 0.40 m top-down pose on joint torque alone.
+# 7.26 N.m is INSIDE the rated 10. The arm can hold the pose. Re-measured with
+# the grasp point and gains since corrected (scripts/probe_torque2.py):
 #
-# The second is entirely plausible for a lightweight teleop arm -- those are
-# often held up by the operator through the leader arm, not by the follower's
-# own actuators. If it is true, then a task laid out at this reach is one the
-# hardware cannot do, and any success rate measured for it in simulation would
-# be measuring something the real robot never could. That is exactly the
-# sim/real gap MATTERIX names, arriving through the actuator spec instead of
-# through geometry.
+#     effort 10, ke  300  ->  sags 69.86 deg, tip 437.1 mm off
+#     effort 10, ke 3000  ->  holds  0.19 deg, tip   1.8 mm
+#     effort 40, ke 3000  ->  holds  0.19 deg, tip   1.8 mm   (identical)
 #
-# Running over spec is therefore a DEMO decision, recorded here so it cannot be
-# mistaken for a physical claim. Resolve it by checking the YAM's real
-# gravity-compensation behaviour before any of this feeds a trust number.
-# ---------------------------------------------------------------------------
-OVER_SPEC_EFFORT_NM = 40.0
+# A position PD with no gravity feedforward has to produce the whole 7.26 N.m
+# through position error alone. At ke=300 that needs 0.024 rad of error before
+# the command even reaches the gravity load, and the loop saturates first. At
+# ke=3000 the same error commands ten times the torque and it holds -- on 10.
+#
+# The original fix raised the effort limit and the stiffness in one change and
+# credited the effort. Raising a torque ceiling to cure a gain deficit reads,
+# to anyone downstream, as "this robot cannot do this task" -- the most
+# expensive kind of wrong answer in a project that exists to produce trust
+# numbers.
+YAM_RATED_EFFORT_NM = 10.0
 
 # The fingers are PRISMATIC, so their gains are N/m, not N.m/rad. Reusing the
 # arm's 300 gave 300 N/m -- a 4 mm squeeze on a beaker produced 0.6 N of grip,
@@ -91,7 +92,7 @@ FINGER_EFFORT_N = 25.0
 
 def configure_drives(builder: newton.ModelBuilder, *, dof_slice: slice | None = None,
                      ke: float = DEFAULT_KE, kd: float = DEFAULT_KD,
-                     effort: float = OVER_SPEC_EFFORT_NM,
+                     effort: float = YAM_RATED_EFFORT_NM,
                      armature: float = DEFAULT_ARMATURE,
                      n_fingers: int = 0, verbose: bool = True) -> None:
     """Put the given dofs into position control with a usable drive.

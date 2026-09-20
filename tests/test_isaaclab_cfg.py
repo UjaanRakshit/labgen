@@ -195,11 +195,18 @@ def test_arm_is_fixed_to_the_bench(source):
     assert "fix_base=True" in source
 
 
-def test_over_spec_torque_is_flagged_in_the_output(source):
-    """40 N.m against the YAM's rated 10 must not pass silently to a reader."""
-    assert "ABOVE the robot's rating" in source
-    assert "joint_effort_limit=40.0" in source
-    assert "48.7 deg" in source, "the measurement behind the decision should be there"
+def test_effort_limit_is_the_robots_own_rating(source):
+    """The arm runs inside its spec, and the file explains why it can.
+
+    An earlier version ran at 40 N.m against the rated 10, from a real
+    measurement (the shoulder sagged at 10) and a wrong conclusion. Static
+    gravity at that pose is 7.26 N.m; the sag was the position gain, not the
+    ceiling. Pinned because "this robot cannot do this task" is the most
+    expensive kind of wrong answer here.
+    """
+    assert "joint_effort_limit=10.0" in source
+    assert "joint_effort_limit=40.0" not in source
+    assert "7.26 N.m" in source, "the gravity figure behind the decision belongs in the file"
 
 
 def test_arm_can_be_omitted(scene):

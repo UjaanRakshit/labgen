@@ -143,8 +143,18 @@ measured, not chosen:
 - `collision_type="Convex Decomposition"` — *not* the converter's `"Convex
   Hull"` default, which turns each L-shaped fingertip into a block spanning
   ±36 mm and swallows a 70 mm beaker.
-- `joint_effort_limit=40.0` — **above** the YAM's rated ±10 N·m, flagged as
-  such in the emitted file with the measurement behind it.
+- `joint_effort_limit=10.0` — the robot's **own** rating. An earlier version of
+  this file ran at 40 and said so, on the strength of a real measurement (the
+  shoulder sagged 48.7° holding a grasp pose at 10 N·m) and a wrong conclusion.
+  Static gravity torque at that pose, summed from the link masses, is
+  **7.26 N·m** on a 4.111 kg arm — comfortably inside the rating. The sag was
+  the position gain: a PD controller with no gravity feedforward has to generate
+  the whole 7.26 N·m out of tracking error, and at `stiffness=300` it saturates
+  before it gets there. At `stiffness=3000` the same pose holds to **0.19°** on
+  10 N·m, and raising the limit to 40 changes the result not at all. The
+  original change moved effort and stiffness together and credited the wrong
+  one. Retracted, because "this robot cannot do this task" is the most expensive
+  kind of wrong answer this project can produce.
 
 Rotations are emitted `(x, y, z, w)`. Isaac Lab 3.0 changed from the older
 wxyz; `SceneSpec` stores wxyz and they are reordered.
@@ -159,13 +169,31 @@ are:
   ratio). Both racks build, but both have unsourced footprints, so neither
   belongs in the reference scene yet. T3's collider checks are untested against
   a decomposed collider.
-- **The petri dish fails the settle test** — the one gate currently red. It
-  sinks 8.43 mm in 2 s with no actuation, against CLAUDE.md's 2 mm gate. This is *not* an SDF resolution
-  problem — the sink is bit-identical across authored voxel sizes of 1.6, 0.8
-  and 0.4 mm and with the SDF schema removed entirely, so it is contact
-  softness in the solver, not collider fidelity. Solver contact parameters need
-  tuning before T3's settle tolerance means anything. The other three bodies
-  pass comfortably (hotplate 0.01 mm, test_tube 0.10 mm, beaker 1.29 mm).
+- **The settle test now passes, and the first diagnosis of why it failed was
+  wrong.** It was reported as "the petri dish fails" — 8.43 mm of sink against
+  CLAUDE.md's 2 mm gate, with the other three bodies passing. Measuring every
+  catalog vessel on its own instead of just the ones in the scene showed one
+  shared defect, not one bad object: sink correlated with contact pressure at
+  **r = -0.76**, so the *least*-loaded vessel sank most, which is the opposite
+  of what compliance does. All five beakers sank ~1.25 mm across a 13x mass
+  range. The beaker was clearing the gate by 0.7 mm of luck while exhibiting the
+  same failure as the dish.
+
+  The cause was contact stiffness and timestep, which are **one setting, not
+  two** — a penetration contact is stable only while the stiffness is small
+  relative to what the timestep can integrate, so sweeping either alone finds an
+  optimum that is an artifact of the other's fixed value. Both earlier
+  one-dimensional readings were exactly that. Moved together the surface is
+  monotone: at `ke=160000, dt=1/960` every vessel lands under 0.1 mm, and
+  160 kN/m is also the honest direction, since glass on a steel benchtop is far
+  stiffer than the importer's default 2500 N/m. `bench_5` worst 0.598 mm,
+  `bench_arm` worst 0.306 mm.
+
+  `convex_decomposition` reaches the same green number by **sealing the dish** —
+  a tube dropped in rests on the rim at 23 mm. The stiffness fix makes the
+  cavity more correct instead: the same tube now rests ON the dish floor at
+  7.89 mm, where before it passed through to 0.02 mm. The cavity probe is what
+  distinguishes those two, and a green gate was not evidence without it.
 - **The SDF collider currently changes nothing under `SolverMuJoCo`.**
   `NewtonSDFCollisionAPI` is authored, Newton detects it
   (`HasAPI(...)` is `True`) and reads the voxel size back, but simulated
