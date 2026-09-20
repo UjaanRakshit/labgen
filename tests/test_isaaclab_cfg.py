@@ -148,12 +148,25 @@ def test_generated_config_imports_only_isaac_labs_abstract_layer(source):
 
 
 def test_labgen_still_imports_without_isaaclab():
-    """The emitter writes Isaac Lab code; it must never import Isaac Lab."""
+    """The emitter writes Isaac Lab code; it must never import Isaac Lab.
+
+    Run in a CLEAN interpreter. Inspecting this process's sys.modules tests the
+    wrong thing: another test module in the same session imports `pxr`, so the
+    check failed on a module this one never touched. What matters is what
+    importing the emitter pulls in by itself.
+    """
+    import subprocess
     import sys
 
-    import labgen.isaaclab_cfg  # noqa: F401
-    leaked = [m for m in ("isaaclab", "omni", "pxr", "newton", "warp", "torch")
-              if m in sys.modules]
+    code = (
+        "import sys; import labgen.isaaclab_cfg;"
+        "banned=('isaaclab','omni','pxr','newton','warp','torch');"
+        "print(','.join(m for m in banned if m in sys.modules))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, cwd=".")
+    assert out.returncode == 0, out.stderr
+    leaked = [m for m in out.stdout.strip().split(",") if m]
     assert not leaked, f"importing the emitter dragged in {leaked}"
 
 
