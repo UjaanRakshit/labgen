@@ -18,6 +18,7 @@ import math
 
 import pytest
 
+from labgen.control import UnsourcedPlacement
 from labgen.isaaclab_cfg import ArmSource, YAM_ARM, emit_scene_cfg, write_scene_cfg
 from labgen.types import SceneSpec
 
@@ -232,6 +233,80 @@ def test_arm_can_be_omitted(scene):
     parsed(src)
     assert "ArticulationCfg(" not in src
     assert "robot:" not in src
+
+
+# --- two arms, because the real rig is bimanual ---------------------------
+
+def test_a_single_arm_still_emits_exactly_one_articulation(source):
+    assert source.count("ArticulationCfg(") == 1
+
+
+def test_two_arms_get_separate_configs_and_separate_prim_paths(scene):
+    """Teleop drives one controller per hand, so each arm has to be
+    independently addressable. Sharing a prim path would put both operator
+    hands on one robot."""
+    left = ArmSource(path=YAM_ARM.path, name="arm_left")
+    right = ArmSource(path=YAM_ARM.path, name="arm_right",
+                      base_position_m=(0.0, 0.62, 0.0),
+                      placement_source="test fixture, not a real measurement")
+    src = emit_scene_cfg(scene, usda_path="/tmp/x.usda", arms=[left, right])
+    ast.parse(src)
+
+    assert src.count("ArticulationCfg(") == 2
+    assert "ARM_CFG_ARM_LEFT" in src and "ARM_CFG_ARM_RIGHT" in src
+    assert 'prim_path="{ENV_REGEX_NS}/ArmLeft"' in src
+    assert 'prim_path="{ENV_REGEX_NS}/ArmRight"' in src
+    assert "arm_left: ArticulationCfg" in src
+    assert "arm_right: ArticulationCfg" in src
+
+
+def test_each_arm_is_emitted_at_its_own_base_pose(scene):
+    right = ArmSource(path=YAM_ARM.path, name="arm_right",
+                      base_position_m=(0.0, 0.62, 0.0),
+                      placement_source="test fixture, not a real measurement")
+    src = emit_scene_cfg(scene, usda_path="/tmp/x.usda",
+                         arms=[ArmSource(path=YAM_ARM.path, name="arm_left"), right])
+    assert "pos=(0, 0.62, 0)" in src, "the second arm sits where it was measured"
+    assert "pos=(0, 0, 0)" in src, "the first arm still defines the frame"
+
+
+def test_a_second_arm_without_a_measured_offset_is_refused():
+    """The mounting offset is a physical quantity off the real bench.
+
+    Inventing it produces a scene that loads, looks correct, and puts every
+    bimanual reach in the wrong place -- the same failure mode as an invented
+    catalog dimension, which is why it is the same rule.
+    """
+    with pytest.raises(UnsourcedPlacement, match="measured off the real rig"):
+        ArmSource(path="yam.xml", name="arm_right", base_position_m=(0.0, 0.62, 0.0))
+
+
+def test_a_todo_placement_is_not_a_measurement():
+    with pytest.raises(UnsourcedPlacement):
+        ArmSource(path="yam.xml", name="arm_right",
+                  base_position_m=(0.0, 0.62, 0.0),
+                  placement_source="TODO ask the lab for the mount spacing")
+
+
+def test_the_first_arm_needs_no_source_because_it_defines_the_frame():
+    assert ArmSource(path="yam.xml", name="arm_left").placement_source == ""
+
+
+def test_two_arms_sharing_a_name_are_rejected(scene):
+    a = ArmSource(path=YAM_ARM.path, name="arm")
+    b = ArmSource(path=YAM_ARM.path, name="arm")
+    with pytest.raises(ValueError, match="share a name"):
+        emit_scene_cfg(scene, usda_path="/tmp/x.usda", arms=[a, b])
+
+
+def test_the_emitted_file_says_where_a_placement_came_from(scene):
+    right = ArmSource(path=YAM_ARM.path, name="arm_right",
+                      base_position_m=(0.0, 0.62, 0.0),
+                      placement_source="bench survey 2026-09-21")
+    src = emit_scene_cfg(scene, usda_path="/tmp/x.usda",
+                         arms=[ArmSource(path=YAM_ARM.path, name="arm_left"), right])
+    assert "bench survey 2026-09-21" in src
+    assert "this arm defines the frame" in src
 
 
 def test_unknown_arm_kind_is_rejected():

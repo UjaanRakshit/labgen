@@ -33,12 +33,20 @@ def scene_for(key):
     p.write_text(json.dumps(d), encoding="utf-8")
     return usda.write_scene(SceneSpec.read(p), f"/tmp/solo_{key}.usda")
 
-def settle(path, dt=1/240, secs=2.0, ke=None):
+def settle(path, dt=1/240, secs=2.0, ke=None, kd=None):
+    """Steps one vessel on a bench.
+
+    kd used to be derived here as ke/25, which is NOT what labgen.settle ships
+    (CONTACT_KD = 800, near critical for these masses). At ke=160000 that
+    formula gives 6400 -- eight times the shipped damping -- so the probe was
+    answering a question about a configuration nobody runs. Pass the real
+    constants in.
+    """
     b = newton.ModelBuilder(); r = b.add_usd(str(path))
     if ke is not None:
         for i in range(b.shape_count):
             b.shape_material_ke[i] = ke
-            b.shape_material_kd[i] = ke / 25.0
+            b.shape_material_kd[i] = kd if kd is not None else ke / 25.0
     m = b.finalize()
     paths = {v: k for k, v in r["path_body_map"].items()}
     idx = [i for i in range(m.body_count) if paths.get(i, "").endswith("obj")][0]
@@ -51,6 +59,15 @@ def settle(path, dt=1/240, secs=2.0, ke=None):
             return float("nan")
     return float(s0.body_q.numpy()[idx, 2] - z0)
 
+# Contact parameters come in on the command line so the SAME table can be run
+# before and after the fix. They are one setting, not two: stiffness is only
+# stable relative to what the timestep can integrate, so a table at one dt says
+# nothing about the other.
+KE = float(sys.argv[1]) if len(sys.argv) > 1 else None
+DT = 1.0 / float(sys.argv[2]) if len(sys.argv) > 2 else 1 / 240
+KD = float(sys.argv[3]) if len(sys.argv) > 3 else None
+print(f"contact ke = {KE if KE is not None else 'import default (2500)'}, "
+      f"kd = {KD if KD is not None else 'ke/25'}, dt = 1/{1 / DT:.0f} s")
 print(f"{'vessel':24} {'wall':>6} {'base_d':>7} {'area':>8} {'mass':>7} {'press':>7} {'sink':>8}")
 print(f"{'':24} {'mm':>6} {'mm':>7} {'mm2':>8} {'g':>7} {'Pa':>7} {'mm':>8}")
 rows = []
@@ -61,7 +78,7 @@ for key in VESSELS:
     base_d = (d.get("base_d") or d.get("outer_d")) * 1000
     area = math.pi * (base_d / 2) ** 2
     press = it.mass_kg * 9.81 / (area * 1e-6)
-    sink = settle(scene_for(key)) * 1000
+    sink = settle(scene_for(key), dt=DT, ke=KE, kd=KD) * 1000
     rows.append((key, wall, base_d, area, it.mass_kg * 1000, press, sink))
     flag = "  <-- over 2 mm" if abs(sink) > 2.0 else ""
     print(f"{key:24} {wall:6.1f} {base_d:7.1f} {area:8.0f} {it.mass_kg*1000:7.1f} "

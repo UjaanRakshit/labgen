@@ -1,4 +1,8 @@
-"""Numerical inverse kinematics for the YAM, against catalog keypoints.
+"""Newton-backed forward kinematics for the YAM, against catalog keypoints.
+
+The SOLVER moved to `labgen.control`; what is left here is the part that
+genuinely needs a simulator, plus back-compatible wrappers for the probe
+scripts. New code should import from labgen.control.
 
 Why not a joint-space waveform: the first attempt at a demo swept the joints on
 a sine, which drove the arm through the worktop and scattered the glassware --
@@ -19,8 +23,16 @@ about whether a policy could do the task.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import newton
+
+_PKG = Path("/mnt/c/Ujaan Docx/Research/labgen")
+if _PKG.exists() and str(_PKG) not in sys.path:
+    sys.path.insert(0, str(_PKG))
+from labgen.control import jacobian, lerp_path, solve_pose   # noqa: E402,F401
 
 GRIPPER_BODY = -1        # last body in the YAM chain; verified against the
                          # README's documented home pose of (0.1106, 0, 0.1735)
@@ -33,6 +45,8 @@ class ArmFK:
     the arm's geometry that could drift from the one physics uses. Asking
     Newton is slower and always agrees with what will actually be simulated.
     """
+
+    n_joints = 6                  # satisfies labgen.control.Kinematics
 
     def __init__(self, model: newton.Model, dof_slice: slice):
         self.model = model
@@ -51,99 +65,28 @@ class ArmFK:
     def position(self, q_arm: np.ndarray) -> np.ndarray:
         return self.gripper_pose(q_arm)[0]
 
+    def pose(self, q_arm: np.ndarray):
+        """labgen.control.Kinematics: (point, approach axis).
 
-def jacobian(fk: ArmFK, q: np.ndarray, eps: float = 1e-4) -> np.ndarray:
-    """3xN position Jacobian by central differences.
+        The axis here is the gripper MOUNT's +Z, which is not where the fingers
+        close -- grasp.GraspFK is the one that solves to the pad centroids. This
+        exists so the same solver can drive both.
+        """
+        pos, quat = self.gripper_pose(q_arm)
+        x, y, z, w = quat
+        return pos, np.array([2 * (x * z + y * w), 2 * (y * z - x * w),
+                              1 - 2 * (x * x + y * y)])
 
-    `eps` is 1e-4 rad, not the 1e-8 a generic optimiser would pick. Newton's
-    `joint_q` is float32, so a 1e-8 perturbation is below the representable
-    difference and the resulting "gradient" is pure rounding noise. That is why
-    an off-the-shelf L-BFGS-B run converged to 283 mm on a target that random
-    sampling reached within 43 mm -- it was descending on noise.
+
+def solve_ik(fk, target, lower, upper, seed=None, restarts: int = 8,
+             tol_m: float = 0.005, iters: int = 120, rng=None):
+    """Back-compatible wrapper over labgen.control.solve_pose, position only.
+
+    Returns the old (q, residual_metres, converged) tuple. Position only:
+    constraining orientation as well shrinks the reachable set sharply for this
+    arm, and a real grasp orientation belongs with a real grasp -- which is
+    what grasp.py does.
     """
-    n = len(q)
-    J = np.zeros((3, n))
-    for i in range(n):
-        dq = np.zeros(n)
-        dq[i] = eps
-        J[:, i] = (fk.position(q + dq) - fk.position(q - dq)) / (2.0 * eps)
-    return J
-
-
-def solve_ik(fk: ArmFK, target: np.ndarray, lower: np.ndarray, upper: np.ndarray,
-             seed: np.ndarray | None = None, restarts: int = 8,
-             tol_m: float = 0.005, iters: int = 120,
-             rng: np.random.Generator | None = None):
-    """Damped least squares IK for position, inside the joint limits.
-
-    Levenberg-Marquardt on the position residual: dq = J^T (J J^T + lambda I)^-1 e,
-    clamped to the limits each step. Damping keeps it stable near the singular
-    configurations a 6-dof arm hits constantly, where a plain pseudo-inverse
-    produces enormous joint steps.
-
-    Position only. Constraining orientation as well shrinks the reachable set
-    sharply for this arm -- joint2 and joint3 cannot go negative -- and a real
-    grasp orientation belongs with a real grasp, which is later work.
-
-    Returns (q, residual_metres, converged).
-    """
-    rng = rng or np.random.default_rng(0)
-    target = np.asarray(target, dtype=float)
-    best_q, best_err = None, np.inf
-
-    seeds = [seed if seed is not None else 0.5 * (lower + upper)]
-    for _ in range(restarts - 1):
-        seeds.append(rng.uniform(lower, upper))
-
-    for s0 in seeds:
-        q = np.clip(np.asarray(s0, dtype=float), lower, upper)
-        lam = 0.05
-        err = np.linalg.norm(fk.position(q) - target)
-
-        for _ in range(iters):
-            e = target - fk.position(q)
-            if np.linalg.norm(e) < tol_m:
-                break
-            J = jacobian(fk, q)
-            JJt = J @ J.T + (lam ** 2) * np.eye(3)
-            step = J.T @ np.linalg.solve(JJt, e)
-
-            # Cap the per-iteration joint motion. Without it a near-singular
-            # step can throw the arm across its whole range and the search
-            # never settles.
-            norm = np.linalg.norm(step)
-            if norm > 0.3:
-                step *= 0.3 / norm
-
-            q_new = np.clip(q + step, lower, upper)
-            err_new = np.linalg.norm(fk.position(q_new) - target)
-            if err_new < err:
-                q, err = q_new, err_new
-                lam = max(lam * 0.7, 1e-3)      # trusting: take bigger steps
-            else:
-                lam = min(lam * 2.0, 10.0)      # cautious: shorten and retry
-                if lam >= 10.0:
-                    break
-
-        if err < best_err:
-            best_q, best_err = q.copy(), err
-        if best_err < tol_m:
-            break
-
-    return best_q, float(best_err), bool(best_err < tol_m)
-
-
-def lerp_path(waypoints: list[np.ndarray], durations: list[float], fps: int):
-    """Joint-space interpolation with a smoothstep ease, one entry per frame.
-
-    Joint-space rather than Cartesian: every sample is then guaranteed to sit
-    inside the joint limits, which a straight line in task space is not.
-    """
-    out: list[np.ndarray] = []
-    for a, b, secs in zip(waypoints, waypoints[1:], durations):
-        n = max(int(secs * fps), 1)
-        for i in range(n):
-            u = (i + 1) / n
-            s = u * u * (3.0 - 2.0 * u)      # smoothstep: zero velocity at ends
-            out.append((1.0 - s) * a + s * b)
-    return out
+    res = solve_pose(fk, target, lower, upper, seed=seed, restarts=restarts,
+                     tol_m=tol_m, iters=iters, rng=rng)
+    return res.q, res.position_error_m, res.ok

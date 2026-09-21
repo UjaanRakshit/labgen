@@ -31,6 +31,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+from .control import require_sourced_placement
 from .types import SceneObject, SceneSpec
 from .validate import YAM, RobotSpec
 
@@ -49,7 +50,11 @@ class ArmSource:
     def __init__(self, path: str, *, kind: str = "mjcf", fix_base: bool = True,
                  collision_from_visuals: bool = True,
                  collision_type: str = "Convex Decomposition",
-                 joint_expr: str = ".*", note: str = ""):
+                 joint_expr: str = ".*", note: str = "",
+                 name: str = "robot",
+                 base_position_m: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                 base_orientation_wxyz: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+                 placement_source: str = ""):
         if kind not in ("mjcf", "urdf", "usd"):
             raise ValueError(f"unknown arm source kind {kind!r}")
         self.path = path
@@ -59,6 +64,24 @@ class ArmSource:
         self.collision_type = collision_type
         self.joint_expr = joint_expr
         self.note = note
+        # The real rig is two YAMs, so an arm carries its own name and
+        # placement. The second one's mounting offset is a measurement, and the
+        # same rule that governs a catalog dimension governs it: no source, no
+        # number. See labgen.control.require_sourced_placement.
+        self.name = name
+        self.base_position_m = tuple(float(v) for v in base_position_m)
+        self.base_orientation_wxyz = tuple(float(v) for v in base_orientation_wxyz)
+        self.placement_source = placement_source
+        require_sourced_placement(name, self.base_position_m,
+                                  self.base_orientation_wxyz, placement_source)
+
+    @property
+    def cfg_symbol(self) -> str:
+        return f"ARM_CFG_{_ident(self.name).upper()}"
+
+    @property
+    def prim_name(self) -> str:
+        return _ident(self.name).title().replace("_", "")
 
 
 # Defaults carrying what this project measured, each with its provenance, so a
@@ -81,6 +104,11 @@ YAM_ARM = ArmSource(
 )
 
 
+def _wxyz_to_xyzw(q):
+    w, x, y, z = q
+    return (x, y, z, w)
+
+
 def _quat_xyzw(obj: SceneObject) -> tuple[float, float, float, float]:
     """SceneSpec's (w, x, y, z) -> Isaac Lab's (x, y, z, w)."""
     w, x, y, z = obj.orientation_wxyz
@@ -98,9 +126,16 @@ def _ident(name: str) -> str:
 
 def emit_scene_cfg(scene: SceneSpec, *, usda_path: str | Path,
                    arm: ArmSource | None = YAM_ARM,
+                   arms: list[ArmSource] | None = None,
                    robot: RobotSpec = YAM,
                    class_name: str | None = None) -> str:
-    """Render an importable Isaac Lab scene config for `scene`."""
+    """Render an importable Isaac Lab scene config for `scene`.
+
+    `arms` takes a list for a bimanual rig; `arm` is the single-arm shorthand
+    and stays the default. Each arm emits its own ArticulationCfg and its own
+    prim path, so the two are independently addressable -- which teleop needs,
+    since an operator drives one controller per hand.
+    """
     cls = class_name or f"{_ident(scene.name).title().replace('_', '')}SceneCfg"
     usda_path = Path(usda_path).as_posix()
 
@@ -139,9 +174,16 @@ def emit_scene_cfg(scene: SceneSpec, *, usda_path: str | Path,
         SCENE_USD = "{usda_path}"
         ''')
 
+    arm_list = (list(arms) if arms is not None
+                else ([arm] if arm is not None else []))
+    names = [a.name for a in arm_list]
+    if len(set(names)) != len(names):
+        raise ValueError(f"two arms share a name: {sorted(names)}. Each arm "
+                         f"needs its own prim path.")
+
     body: list[str] = []
-    if arm is not None:
-        body.append(_emit_arm(arm, robot))
+    for a in arm_list:
+        body.append(_emit_arm(a, robot))
 
     body.append(f"@configclass\nclass {cls}(InteractiveSceneCfg):")
     body.append('    """The bench, its contents, and the arm."""\n')
@@ -186,9 +228,9 @@ def emit_scene_cfg(scene: SceneSpec, *, usda_path: str | Path,
                 )
                 '''), "    "))
 
-    if arm is not None:
-        body.append("    robot: ArticulationCfg = ARM_CFG.replace(\n"
-                    '        prim_path="{ENV_REGEX_NS}/Robot")\n')
+    for a in arm_list:
+        body.append(f"    {_ident(a.name)}: ArticulationCfg = {a.cfg_symbol}.replace(\n"
+                    f'        prim_path="{{ENV_REGEX_NS}}/{a.prim_name}")\n')
 
     return head + "\n\n" + "\n".join(body)
 
@@ -212,6 +254,11 @@ def _emit_arm(arm: ArmSource, robot: RobotSpec) -> str:
         f"{robot.jaw_opening_m * 1000:.0f} mm.",
         f"# Source: {robot.source}",
         "#",
+        (f"# Base at the scene origin: this arm defines the frame."
+         if arm.base_position_m == (0.0, 0.0, 0.0)
+         and arm.base_orientation_wxyz == (1.0, 0.0, 0.0, 0.0)
+         else f"# Base placement source: {arm.placement_source}"),
+        "#",
         "# The effort limit is the robot's own rating, not a raised one.",
         "# Static gravity torque at a 0.409 m grasp pose is 7.26 N.m at the",
         "# shoulder (4.111 kg arm), inside the rated 10. An earlier version ran",
@@ -234,8 +281,8 @@ def _emit_arm(arm: ArmSource, robot: RobotSpec) -> str:
         "#",
         "# ImplicitActuatorCfg is a PD and does not compensate gravity. If you",
         "# command trajectories through this config, add the feedforward.",
-        "ARM_CFG = ArticulationCfg(",
-        '    prim_path="{ENV_REGEX_NS}/Robot",',
+        f"{arm.cfg_symbol} = ArticulationCfg(",
+        f'    prim_path="{{ENV_REGEX_NS}}/{arm.prim_name}",',
     ]
 
     if arm.kind == "usd":
@@ -260,8 +307,9 @@ def _emit_arm(arm: ArmSource, robot: RobotSpec) -> str:
 
     lines += [
         "    init_state=ArticulationCfg.InitialStateCfg(",
-        "        pos=(0.0, 0.0, 0.0),        # the robot base frame origin",
-        "        rot=(0.0, 0.0, 0.0, 1.0),   # Isaac Lab 3.0 is (x, y, z, w)",
+        f"        pos={_fmt3(arm.base_position_m)},",
+        f"        rot={_fmt3(_wxyz_to_xyzw(arm.base_orientation_wxyz))},"
+        f"   # Isaac Lab 3.0 is (x, y, z, w)",
         f'        joint_pos={{"{arm.joint_expr}": 0.0}},',
         "    ),",
         "    actuators={",

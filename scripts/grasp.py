@@ -22,64 +22,36 @@ and linear in between.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 
 import newton
 
-# Finger joints are the last two dofs of the URDF chain.
-N_ARM = 6
-N_FINGER = 2
+# labgen is the package; this directory is a bag of scripts that drive it.
+_PKG = Path("/mnt/c/Ujaan Docx/Research/labgen")
+if _PKG.exists() and str(_PKG) not in sys.path:
+    sys.path.insert(0, str(_PKG))
+from labgen.control import (YAM_JAWS, YAM_N_ARM, YAM_N_FINGER,   # noqa: E402
+                            GraspTooWide, solve_pose)
 
-# Finger calibration, measured from the JAW geometry (scripts/probe_gap2.py):
+# The finger model, the jaw calibration and the IK solver all live in
+# labgen.control now. This module keeps only what genuinely needs Newton: the
+# forward kinematics of the grasp frame, read out of the simulator so it cannot
+# drift from the geometry physics actually uses.
 #
-#     q =  0.000  ->   0.06 mm   jaws closed
-#     q = -0.047  ->  94.06 mm   jaws fully open
-#
-# and linear to within the sampling resolution across the whole stroke.
-#
-# The previous model had this exactly backwards -- 89 mm at q=0 and 5 mm at
-# q=-0.047 -- because it was read off the separation of the tip BODY ORIGINS.
-# Those origins DO move together as q goes to -0.047, but each finger is a
-# wedge that extends inward from its own origin, so the jaws do the opposite of
-# what the origins do. Commanding "open" therefore shut the hand, and
-# commanding a 70 mm grip drove the pads to roughly 12 mm and straight through
-# the glass. Nothing about the numbers looked wrong; the render did.
-#
-# A second trap on the way: the minimum distance between the two finger meshes
-# taken as a whole plateaus at 19 mm regardless of jaw position, because the
-# brackets near the mount sit a fixed distance apart. Measuring that instead of
-# the jaws says the gripper can only open 19 mm and that a beaker can never be
-# picked up. Only the distal half of the finger is the jaw.
-FINGER_CLOSED = 0.0
-FINGER_OPEN = -0.047
-GAP_CLOSED = 0.00006
-GAP_OPEN = 0.09406
+# The names below are re-exported so the ~20 probe scripts that import them
+# keep working. New code should import from labgen.control directly.
+N_ARM = YAM_N_ARM
+N_FINGER = YAM_N_FINGER
+MAX_GRASP_WIDTH = YAM_JAWS.max_gap_m
+FINGER_CLOSED = YAM_JAWS.q_closed
+FINGER_OPEN = YAM_JAWS.q_open
+GAP_CLOSED = YAM_JAWS.gap_closed_m
+GAP_OPEN = YAM_JAWS.gap_open_m
 
-MAX_GRASP_WIDTH = GAP_OPEN
-
-
-class GraspTooWide(ValueError):
-    """The object is wider than the gripper can open."""
-
-
-def finger_q_for_gap(gap_m: float) -> float:
-    """Joint coordinate that opens the jaws to `gap_m`.
-
-    Refuses rather than clamping. Silently clamping a too-wide request to the
-    fully open position produces a hand that closes on nothing and a task that
-    reports success while the object never moves -- which is the failure this
-    whole exercise has been chasing.
-    """
-    if gap_m > MAX_GRASP_WIDTH:
-        raise GraspTooWide(
-            f"asked for a {gap_m * 1000:.1f} mm opening but the YAM's jaws max "
-            f"out at {MAX_GRASP_WIDTH * 1000:.1f} mm. This object cannot be "
-            f"grasped by this gripper -- it is a task feasibility question, not "
-            f"something to clamp away."
-        )
-    frac = (gap_m - GAP_CLOSED) / (GAP_OPEN - GAP_CLOSED)
-    return float(np.clip(FINGER_CLOSED + frac * (FINGER_OPEN - FINGER_CLOSED),
-                         FINGER_OPEN, FINGER_CLOSED))
+finger_q_for_gap = YAM_JAWS.q_for_gap
 
 
 def quat_to_matrix(q: np.ndarray) -> np.ndarray:
@@ -98,6 +70,8 @@ class GraspFK:
     Everything comes from the simulator's own forward kinematics, so it cannot
     drift from the geometry physics uses.
     """
+
+    n_joints = YAM_N_ARM          # satisfies labgen.control.Kinematics
 
     def __init__(self, model: newton.Model, coord_slice: slice):
         self.model = model
@@ -186,115 +160,27 @@ class GraspFK:
         return self._grasp_from(body_q)
 
 
-def forward(fk: GraspFK, q: np.ndarray, with_axis: bool, w_axis: float) -> np.ndarray:
-    """The quantity being driven to a goal: grasp point, optionally + axis.
+def solve_grasp_ik(fk, target, lower, upper, approach=None, seed=None,
+                   w_axis: float = 0.05, restarts: int = 10,
+                   tol_m: float = 0.004, tol_deg: float = 12.0,
+                   iters: int = 160, rng=None):
+    """Back-compatible wrapper over labgen.control.solve_pose.
 
-    Deliberately the FORWARD map, not the error. The Jacobian below is
-    d(forward)/dq, and the LM step is J_pinv @ (goal - forward). Differentiating
-    the error instead flips the sign of every step: each one then increases the
-    cost, the line search rejects all of them, and the solver silently returns
-    its seed. That produced identical 157 mm residuals across four different
-    weightings -- the giveaway that nothing was moving at all.
+    Returns the old (q, position_error_m, axis_error_deg, converged) tuple.
+    The solver itself, its damping schedule and the reason it differentiates the
+    forward map rather than the residual are all in the package now, with tests
+    that run against an analytic chain and need no GPU.
     """
-    point, axis = fk.pose(q)
-    return np.concatenate([point, w_axis * axis]) if with_axis else point
-
-
-def goal_vector(target: np.ndarray, approach: np.ndarray | None,
-                w_axis: float) -> np.ndarray:
-    return (np.concatenate([target, w_axis * approach])
-            if approach is not None else np.asarray(target, float))
-
-
-def solve_grasp_ik(fk: GraspFK, target: np.ndarray, lower: np.ndarray,
-                   upper: np.ndarray, approach: np.ndarray | None = None,
-                   seed: np.ndarray | None = None, w_axis: float = 0.05,
-                   restarts: int = 10, tol_m: float = 0.004,
-                   tol_deg: float = 12.0, iters: int = 160,
-                   rng: np.random.Generator | None = None):
-    """Damped least squares over position and approach direction.
-
-    `w_axis` converts a unit-vector error into metres so both terms live in one
-    residual. 0.05 means "a fully wrong approach direction costs about as much
-    as being 10 cm away" -- position dominates, which is what you want: a grasp
-    that is 5 mm off and 10 degrees rotated is recoverable, one that is 50 mm
-    off is not.
-
-    Central differences at 1e-4 rad. Newton's joint_q is float32, so a
-    generic optimiser's 1e-8 step is below the representable difference and
-    descends on rounding noise -- that cost this project a day.
-
-    Returns (q, position_error_m, axis_error_deg, converged).
-    """
-    rng = rng or np.random.default_rng(0)
-    target = np.asarray(target, float)
-    if approach is not None:
-        approach = np.asarray(approach, float)
-        approach = approach / np.linalg.norm(approach)
-
-    n = N_ARM
-    lo, hi = lower[:n], upper[:n]
-    eps = 1e-4
-
-    def scores(q):
-        point, axis = fk.pose(q)
-        pos = float(np.linalg.norm(target - point))
-        ang = float(np.degrees(np.arccos(np.clip(axis @ approach, -1, 1)))) \
-            if approach is not None else 0.0
-        return pos, ang
-
-    best = (None, np.inf, 180.0)
-    seeds = [seed[:n] if seed is not None else 0.5 * (lo + hi)]
-    for _ in range(restarts - 1):
-        seeds.append(rng.uniform(lo, hi))
-
-    for s0 in seeds:
-        use_axis = approach is not None
-        goal = goal_vector(target, approach, w_axis)
-        q = np.clip(np.asarray(s0, float)[:n], lo, hi)
-        lam = 0.05
-        r = goal - forward(fk, q, use_axis, w_axis)
-        cost = float(r @ r)
-
-        for _ in range(iters):
-            rows = len(r)
-            J = np.zeros((rows, n))
-            for i in range(n):
-                dq = np.zeros(n)
-                dq[i] = eps
-                J[:, i] = (forward(fk, q + dq, use_axis, w_axis)
-                           - forward(fk, q - dq, use_axis, w_axis)) / (2 * eps)
-
-            JJt = J @ J.T + (lam ** 2) * np.eye(rows)
-            step = J.T @ np.linalg.solve(JJt, r)
-            nrm = np.linalg.norm(step)
-            if nrm > 0.3:
-                step *= 0.3 / nrm
-
-            q_new = np.clip(q + step, lo, hi)
-            r_new = goal - forward(fk, q_new, use_axis, w_axis)
-            cost_new = float(r_new @ r_new)
-            if cost_new < cost:
-                q, r, cost = q_new, r_new, cost_new
-                lam = max(lam * 0.7, 1e-3)
-            else:
-                lam = min(lam * 2.0, 10.0)
-                if lam >= 10.0:
-                    break
-
-        pos, ang = scores(q)
-        if pos < best[1]:
-            best = (q.copy(), pos, ang)
-        if pos < tol_m and ang < tol_deg:
-            break
-
-    q, pos, ang = best
-    return q, pos, ang, bool(pos < tol_m and ang < tol_deg)
+    res = solve_pose(fk, target, lower[:N_ARM], upper[:N_ARM],
+                     approach=approach, seed=seed, w_axis=w_axis,
+                     restarts=restarts, tol_m=tol_m, tol_deg=tol_deg,
+                     iters=iters, rng=rng)
+    return res.q, res.position_error_m, res.axis_error_deg, res.ok
 
 
 def with_fingers(q_arm: np.ndarray, finger: float) -> np.ndarray:
-    """Full 8-dof configuration: 6 arm joints plus both fingers together."""
+    """Full 8-dof configuration: six arm joints plus both fingers together."""
     out = np.zeros(N_ARM + N_FINGER)
-    out[:N_ARM] = q_arm[:N_ARM]
+    out[:N_ARM] = np.asarray(q_arm, float)[:N_ARM]
     out[N_ARM:] = finger
     return out
