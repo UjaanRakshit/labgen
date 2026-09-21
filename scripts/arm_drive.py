@@ -152,3 +152,50 @@ def report(model: newton.Model, label: str = "") -> None:
         v = peek(name)
         if v is not None and len(v):
             print(f"   {label}{name:20} {np.unique(v)[:6]}")
+
+
+def gravity_torques(bodies_world, masses, joint_axis, *, offset: int = 0,
+                    n_arm: int = 6, g: float = 9.81):
+    """Static torque each revolute joint must hold against gravity, per joint.
+
+    Returns SIGNED torques: the moment gravity exerts about each joint axis.
+    To hold station an actuator must supply the NEGATIVE of this.
+
+    First principles, no solver: for joint i, sum (r_link - r_joint) x (m g)
+    over every link OUTBOARD of it and project onto the joint axis.
+
+    This is the quantity the hardware has to produce. It is NOT the same as what
+    a position PD commands -- a PD with no gravity feedforward has to generate
+    the whole gravity load out of tracking error, so its command scales with the
+    gain and says nothing about the robot. Confusing the two is how this project
+    came to report an over-spec arm.
+
+    `bodies_world` is a full-model body_q array; `offset` is where the arm's
+    bodies start in it, since the scene's bodies are added first.
+    """
+    import numpy as np
+
+    masses = np.asarray(masses, float)
+    gv = np.array([0.0, 0.0, -g])
+    n_links = len(masses)
+    taus = np.zeros(n_arm)
+    for i in range(n_arm):
+        anchor = bodies_world[offset + i, :3]
+        q = bodies_world[offset + i, 3:]
+        # xyzw -> rotation matrix, inline to keep this module dependency-free
+        x, y, z, w = (float(v) for v in q)
+        R = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ])
+        axis = R @ np.asarray(joint_axis[i][:3], float)
+        axis = axis / (np.linalg.norm(axis) or 1.0)
+        t = np.zeros(3)
+        for j in range(i, n_links):
+            t += np.cross(bodies_world[offset + j, :3] - anchor, masses[j] * gv)
+        # SIGNED. The caller takes abs() to report a magnitude; a gravity
+        # feedforward needs the sign or it doubles the load instead of
+        # cancelling it.
+        taus[i] = float(t @ axis)
+    return taus

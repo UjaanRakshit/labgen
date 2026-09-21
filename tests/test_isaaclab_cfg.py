@@ -209,6 +209,24 @@ def test_effort_limit_is_the_robots_own_rating(source):
     assert "7.26 N.m" in source, "the gravity figure behind the decision belongs in the file"
 
 
+def test_file_warns_that_the_actuator_does_not_compensate_gravity(source):
+    """Holding the pose and executing a trajectory are different questions.
+
+    Both were answered the wrong way once. The effort limit was raised because
+    the arm sagged (it was the gain), and then the trajectory failure was blamed
+    on acceleration torque (it was not -- slowing 4x moved peak error 100.3 to
+    89.9 deg). Gravity peaks at 8.06 N.m of the rated 10 over the plan, so a PD
+    with no feedforward idles at 81% saturation. With the feedforward, the same
+    10 N.m and the same gains track to 3.95 deg.
+
+    ImplicitActuatorCfg is a PD. Anyone driving a trajectory through this
+    generated config inherits the problem, so the file has to say so.
+    """
+    assert "8.06" in source, "the gravity figure over the plan belongs in the file"
+    assert "does not compensate gravity" in source
+    assert "3.95 deg" in source, "and the number showing the feedforward fixes it"
+
+
 def test_arm_can_be_omitted(scene):
     src = emit_scene_cfg(scene, usda_path="/tmp/x.usda", arm=None)
     parsed(src)

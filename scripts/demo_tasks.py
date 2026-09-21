@@ -42,12 +42,13 @@ Fixing this properly needs collision geometry for the YAM -- either from i2rt
 or authored against measured pad dimensions. Set GRASP_MODE="contact" to
 reproduce the failure.
 
-    python demo_tasks.py <scene.usda> <yam.urdf> <out_dir> [--contact]
+    python demo_tasks.py <scene.usda> <yam.urdf> <out_dir> [--contact] [--no-render]
 """
 
 from __future__ import annotations
 
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -58,7 +59,8 @@ import newton
 from newton.viewer import ViewerGL
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from arm_drive import configure_drives                                   # noqa: E402
+from arm_drive import (DEFAULT_KD, DEFAULT_KE, YAM_RATED_EFFORT_NM,      # noqa: E402
+                       configure_drives, gravity_torques)
 from arm_ik import lerp_path                                             # noqa: E402
 from grasp import (GraspFK, MAX_GRASP_WIDTH, N_ARM, finger_q_for_gap,    # noqa: E402
                    quat_to_matrix, solve_grasp_ik, with_fingers)
@@ -93,6 +95,26 @@ TRANSIT_Z = 0.22
 # the stage this project has been deferring. This demo is a fairly direct
 # argument for why it is not optional.
 GRASP_TOLERANCE = 0.07
+
+# Multiplies every waypoint duration. A slower trajectory needs less
+# acceleration torque, which is the difference between a task the arm can do on
+# its rated 10 N.m and one that appears to need the limit raised.
+SPEED_SCALE = float(os.environ.get("LABGEN_SPEED_SCALE", "1.0"))
+
+# The effort ceiling, overridable ONLY so the torque the trajectory demands can
+# be measured without the ceiling hiding it. Raising it is a diagnostic, never a
+# fix: see arm_drive.YAM_RATED_EFFORT_NM for why this project already got that
+# wrong once.
+EFFORT_NM = float(os.environ.get("LABGEN_EFFORT_NM", "0")) or None
+
+# Position gain, overridable for the same diagnostic reason. ke and the effort
+# limit are not independent: a position PD saturates at effort/ke of error, so
+# ke=3000 against a 10 N.m limit goes open-loop at 0.19 degrees.
+KE = float(os.environ.get("LABGEN_KE", "0")) or None
+
+# Gravity feedforward. Off by default so the baseline stays reproducible; this
+# is the fix the measurements point at, not a tuning knob.
+GRAVCOMP = os.environ.get("LABGEN_GRAVCOMP", "") not in ("", "0")
 
 # Whether the ARM's own links collide with the scene.
 #
@@ -182,12 +204,13 @@ class Planner:
     def move_to(self, target, secs, label, approach=DOWN):
         q = self._ik(target, label, approach)
         a = with_fingers(self.steps[-1].cfg[:N_ARM] if self.steps else q, self.finger)
-        self._emit(lerp_path([a, with_fingers(q, self.finger)], [secs], FPS), label)
+        self._emit(lerp_path([a, with_fingers(q, self.finger)],
+                             [secs * SPEED_SCALE], FPS), label)
 
     def set_fingers(self, gap_m, secs, label, attach=None, release=False):
         tgt = finger_q_for_gap(gap_m)
         cfgs = lerp_path([with_fingers(self.q, self.finger),
-                          with_fingers(self.q, tgt)], [secs], FPS)
+                          with_fingers(self.q, tgt)], [secs * SPEED_SCALE], FPS)
         self._emit(cfgs, label, attach, release)
         self.finger = tgt
 
@@ -254,6 +277,7 @@ def pick_and_place(pl, obj, grasp_kp, place_xy, surface_z):
 def main() -> int:
     scene_usda, urdf, out_dir = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     contact_mode = "--contact" in sys.argv
+    render = "--no-render" not in sys.argv
     out_dir.mkdir(parents=True, exist_ok=True)
     scene = SceneSpec.read(
         f"/mnt/c/Ujaan Docx/Research/labgen/examples/{scene_usda.stem}.json")
@@ -273,13 +297,18 @@ def main() -> int:
 
     dofs = slice(sd, sd + arm.joint_dof_count)
     coords = slice(sc, sc + arm.joint_coord_count)
-    configure_drives(builder, dof_slice=dofs, n_fingers=2)
-    print("   NOTE: arm effort limit is 40 N.m, ABOVE the YAM's rated 10 N.m. "
-          "See arm_drive.py -- 10 N.m sags 48.7 deg at this reach.")
+    effort = EFFORT_NM or YAM_RATED_EFFORT_NM
+    ke = KE or DEFAULT_KE
+    configure_drives(builder, dof_slice=dofs, n_fingers=2, effort=effort, ke=ke)
+    if EFFORT_NM is None:
+        print(f"   arm effort limit {effort:g} N.m -- the robot's own rating")
+    else:
+        print(f"   arm effort limit {effort:g} N.m -- DIAGNOSTIC override of the "
+              f"rated {YAM_RATED_EFFORT_NM:g}, to measure demand without saturation")
 
     model = builder.finalize()
     fk = GraspFK(model, coords)
-    print(f"model: {model.body_count} bodies")
+    print(f"model: {model.body_count} bodies, speed scale {SPEED_SCALE:g}x")
     print(f"grasp    : {'CONTACT (expected to fail)' if contact_mode else 'KINEMATIC -- labelled simplification'}")
     print(f"arm links: {'colliding' if ARM_COLLIDES else 'NOT colliding (no collision geometry in the URDF)'}")
 
@@ -311,6 +340,37 @@ def main() -> int:
     print(f"\ntrajectory: {len(pl.steps)} frames ({len(pl.steps) / FPS:.1f} s), "
           f"all IK converged = {pl.ok}")
 
+    # --- what gravity alone asks of each joint, over the whole plan --------
+    #
+    # Run over the PLANNED configurations, before the sim starts. This calls
+    # eval_fk on the whole model, which is exactly what must never happen inside
+    # the step loop -- SolverMuJoCo does not sync joint_q back for the
+    # articulation, so rebuilding from it mid-run teleports the arm.
+    #
+    # This is the number that says something about the robot. The PD's commanded
+    # torque does not: it scales with the gain.
+    arm_masses = np.asarray(arm.body_mass, float)
+    arm_axes = np.asarray(arm.joint_axis, float)
+    body_offset = model.body_count - len(arm_masses)
+    #
+    # Precomputed for every frame, not recomputed inside the loop, for exactly
+    # that reason -- the plan is fixed, so this is a lookup table.
+    grav_ff = np.zeros((len(pl.steps), N_ARM))
+    for i, st in enumerate(pl.steps):
+        bw = fk._eval(st.cfg[:N_ARM])
+        grav_ff[i] = gravity_torques(bw, arm_masses, arm_axes,
+                                     offset=body_offset, n_arm=N_ARM)
+    mags = np.abs(grav_ff)
+    grav_at = int(mags.max(axis=1).argmax())
+    grav = mags[grav_at]
+    print()
+    print("static gravity torque at the worst pose in the plan (N.m):")
+    print("   " + "  ".join(f"j{j + 1}={t:6.2f}" for j, t in enumerate(grav)))
+    print(f"   worst {grav.max():.2f} N.m at j{int(grav.argmax()) + 1}, frame "
+          f"{grav_at}/{len(pl.steps)}, against the rated "
+          f"{YAM_RATED_EFFORT_NM:g} -- "
+          f"{'INSIDE' if grav.max() <= YAM_RATED_EFFORT_NM else 'OVER'}")
+
     # --- simulate ---------------------------------------------------------
     s0, s1 = model.state(), model.state()
     control = model.control()
@@ -321,8 +381,14 @@ def main() -> int:
     newton.eval_fk(model, model.joint_q, model.joint_qd, s1)
 
     solver = newton.solvers.SolverMuJoCo(model, iterations=120, ls_iterations=60)
-    viewer = ViewerGL(width=WIDTH, height=HEIGHT, headless=True, vsync=False)
-    viewer.set_model(model)
+
+    # --no-render steps the same physics and skips the pixels. Rendering is most
+    # of the wall clock here (one 1600x900 PNG per frame), and a question about
+    # joint torque does not need a single one of them.
+    viewer = None
+    if render:
+        viewer = ViewerGL(width=WIDTH, height=HEIGHT, headless=True, vsync=False)
+        viewer.set_model(model)
 
     free = [o.instance_id for o in scene.free_bodies]
     body_of = {name: i for i, name in enumerate(free)}
@@ -332,9 +398,12 @@ def main() -> int:
     targets = control.joint_target_q.numpy().copy()
     look_at = np.array([-0.02, 0.22, 0.14])
     held: tuple[int, np.ndarray, np.ndarray] | None = None
-    from PIL import Image
+    if render:
+        from PIL import Image
 
     n = 0
+    peak_err, peak_err_frame = 0.0, -1
+    peak_tau = np.zeros(6)
     for i, step in enumerate(pl.steps):
         if step.attach and not contact_mode:
             name, kp = step.attach
@@ -375,6 +444,17 @@ def main() -> int:
 
         targets[coords] = step.cfg
         control.joint_target_q.assign(targets)
+
+        # Gravity feedforward: hand the joint the torque it needs to hold
+        # station, so the PD's whole authority is available for MOTION instead
+        # of 81% of it being spent standing still. Without this the drive sits
+        # at 8.06 / 10 N.m before the arm has moved at all, and saturates on the
+        # first millimetre of lag -- which is what a 100 deg "tracking error"
+        # at every trajectory speed was really reporting.
+        if GRAVCOMP:
+            ff = control.joint_f.numpy()
+            ff[dofs.start: dofs.start + N_ARM] = -grav_ff[i]
+            control.joint_f.assign(ff.astype(np.float32))
         for _ in range(SUBSTEPS):
             contacts = model.collide(s0)
             solver.step(s0, s1, control, contacts, DT)
@@ -415,26 +495,43 @@ def main() -> int:
             print(f"   diverged at frame {i}")
             break
 
-        a = -1.0 + 0.55 * math.sin(2.0 * math.pi * i / len(pl.steps))
-        eye = look_at + np.array([1.05 * math.cos(a), 1.05 * math.sin(a), 0.62])
-        aim(viewer, eye, look_at)
-        viewer.begin_frame(i / FPS)
-        viewer.log_state(s0)
-        viewer.end_frame()
-        f = viewer.get_frame()
-        if f is None:
-            break
-        arr = f.numpy() if hasattr(f, "numpy") else np.asarray(f)
-        if arr.dtype != np.uint8:
-            arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
-        Image.fromarray(arr[:, :, :3]).save(out_dir / f"frame_{i:04d}.png")
-        n += 1
-        if i % 300 == 0:
-            jq_now = s0.joint_q.numpy()[coords]
-            print(f"   frame {i}/{len(pl.steps)}  arm tracking error "
-                  f"{np.degrees(np.abs(jq_now[:6] - step.cfg[:6]).max()):.2f} deg")
+        if viewer is not None:
+            a = -1.0 + 0.55 * math.sin(2.0 * math.pi * i / len(pl.steps))
+            eye = look_at + np.array([1.05 * math.cos(a), 1.05 * math.sin(a), 0.62])
+            aim(viewer, eye, look_at)
+            viewer.begin_frame(i / FPS)
+            viewer.log_state(s0)
+            viewer.end_frame()
+            f = viewer.get_frame()
+            if f is None:
+                break
+            arr = f.numpy() if hasattr(f, "numpy") else np.asarray(f)
+            if arr.dtype != np.uint8:
+                arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
+            Image.fromarray(arr[:, :, :3]).save(out_dir / f"frame_{i:04d}.png")
+            n += 1
+        # Peak tracking error over the WHOLE run, not a sample every 300
+        # frames. The sampled version reported 52 deg at one frame and 81 at
+        # another, which says nothing about whether the arm ever kept up -- and
+        # the peak is the number the torque question turns on.
+        jq_now = s0.joint_q.numpy()[coords]
+        err = float(np.degrees(np.abs(jq_now[:6] - step.cfg[:6]).max()))
 
-    viewer.close()
+        # What the drive law ASKS for, before the effort limit clips it. This is
+        # the number that decides whether a trajectory is inside the robot's
+        # rating, and it is not visible in the tracking error: once the limit
+        # binds, the PD is open-loop at saturation and the error says only that
+        # it lost, not by how much.
+        qd_now = s0.joint_qd.numpy()[dofs]
+        tau = ke * (step.cfg[:6] - jq_now[:6]) - DEFAULT_KD * qd_now[:6]
+        peak_tau = np.maximum(peak_tau, np.abs(tau))
+        if err > peak_err:
+            peak_err, peak_err_frame = err, i
+        if i % 300 == 0:
+            print(f"   frame {i}/{len(pl.steps)}  arm tracking error {err:.2f} deg")
+
+    if viewer is not None:
+        viewer.close()
 
     print("\nwhere each object ended up:")
     final = s0.body_q.numpy()
@@ -443,7 +540,18 @@ def main() -> int:
         print(f"   {name:10} {np.round(starts[name], 3)} -> {np.round(final[bi, :3], 3)}"
               f"   moved {moved * 1000:6.1f} mm")
     print(f"\nwrote {n} frames")
-    return 0 if n else 1
+    # Deliberately NOT called "torque required". This is what the PD asks for,
+    # and it scales with ke: at ke=3000 a single degree of lag commands 52 N.m.
+    # It says how hard the controller is pushing, not what the arm needs. The
+    # figure that says something about the robot is the gravity torque above.
+    print("peak PD command, per joint (N.m) -- scales with ke, not a requirement:")
+    print("   " + "  ".join(f"j{j + 1}={t:6.2f}" for j, t in enumerate(peak_tau)))
+    print(f"   clipped at {effort:g} N.m, so anything above that is saturation")
+    print(f"peak arm tracking error {peak_err:.2f} deg at frame "
+          f"{peak_err_frame}/{len(pl.steps)}  --  effort limit "
+          f"{effort:g} N.m, ke {ke:g}, speed scale {SPEED_SCALE:g}x, "
+          f"gravity feedforward {'ON' if GRAVCOMP else 'OFF'}")
+    return 0 if (n or not render) else 1
 
 
 if __name__ == "__main__":
