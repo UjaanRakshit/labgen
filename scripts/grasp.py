@@ -73,9 +73,21 @@ class GraspFK:
 
     n_joints = YAM_N_ARM          # satisfies labgen.control.Kinematics
 
-    def __init__(self, model: newton.Model, coord_slice: slice):
+    def __init__(self, model: newton.Model, coord_slice: slice,
+                 body_offset: int | None = None, n_bodies: int | None = None):
+        """`body_offset`/`n_bodies` locate THIS arm's bodies in the model.
+
+        Without them the tip bodies are taken as the last two in the whole
+        model, which is correct for one arm and silently wrong for two: both
+        arms then read the SECOND arm's fingers, so the first arm's forward
+        kinematics reports a gripper 440 mm away from where it is. Measured as
+        a 526 mm IK residual on a pose that is trivially reachable.
+        """
         self.model = model
         self.slice = coord_slice
+        end = model.body_count if body_offset is None else body_offset + n_bodies
+        self._tip_ids = (end - 1, end - 2)
+        self._mount_id = end - 3
         self.state = model.state()
         self._q = model.joint_q.numpy().copy()
 
@@ -101,7 +113,7 @@ class GraspFK:
         out: dict[int, list[np.ndarray]] = {}
         for i in range(model.shape_count):
             bi = int(shape_body[i])
-            if bi not in (model.body_count - 1, model.body_count - 2):
+            if bi not in self._tip_ids:
                 continue
             geo = model.shape_source[i]
             if geo is None or not hasattr(geo, "vertices"):
@@ -130,7 +142,8 @@ class GraspFK:
 
     def _grasp_from(self, bodies: np.ndarray) -> np.ndarray:
         if not self._tip_local:
-            return 0.5 * (bodies[-1, :3] + bodies[-2, :3])
+            a, b = self._tip_ids
+            return 0.5 * (bodies[a, :3] + bodies[b, :3])
         pts = [quat_to_matrix(bodies[bi, 3:]) @ c + bodies[bi, :3]
                for bi, c in self._tip_local]
         return 0.5 * (pts[0] + pts[1])
@@ -147,12 +160,12 @@ class GraspFK:
         """
         bodies = self._eval(q_arm)
         # The gripper mount is the body just before the two tips.
-        R = quat_to_matrix(bodies[-3, 3:])
+        R = quat_to_matrix(bodies[self._mount_id, 3:])
         return R @ np.array([0.0, 0.0, 1.0])
 
     def pose(self, q_arm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         bodies = self._eval(q_arm)
-        axis = quat_to_matrix(bodies[-3, 3:]) @ np.array([0.0, 0.0, 1.0])
+        axis = quat_to_matrix(bodies[self._mount_id, 3:]) @ np.array([0.0, 0.0, 1.0])
         return self._grasp_from(bodies), axis
 
     def grasp_point_from_state(self, body_q: np.ndarray) -> np.ndarray:

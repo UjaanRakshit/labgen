@@ -36,6 +36,9 @@ import numpy as np
 
 __all__ = [
     "ArmSpec",
+    "BimanualRig",
+    "is_placeholder",
+    "PLACEHOLDER_PREFIX",
     "JawModel",
     "Kinematics",
     "GraspTooWide",
@@ -85,6 +88,21 @@ class UnsourcedPlacement(ValueError):
     """An arm was placed at an offset nobody measured."""
 
 
+PLACEHOLDER_PREFIX = "PLACEHOLDER"
+
+
+def is_placeholder(source: str) -> bool:
+    """A source explicitly labelled as a stand-in for a real number.
+
+    Deliberately distinct from both a real source and a TODO. A TODO means "no
+    number yet" and must block. A PLACEHOLDER means "a number chosen so the
+    rest of the system can be built and run, which is NOT a measurement" -- it
+    passes so work can proceed, and it poisons `verified` so nothing producing
+    trust-bearing output will accept it.
+    """
+    return (source or "").strip().upper().startswith(PLACEHOLDER_PREFIX)
+
+
 def require_sourced_placement(name: str, position, orientation_wxyz,
                               source: str) -> None:
     """Refuse a non-origin placement that nobody measured.
@@ -103,6 +121,8 @@ def require_sourced_placement(name: str, position, orientation_wxyz,
     if at_origin:
         return
     s = (source or "").strip()
+    if is_placeholder(s):
+        return
     if not s or s.upper().startswith("TODO"):
         raise UnsourcedPlacement(
             f"{name} is placed at {tuple(position)} but its placement source is "
@@ -293,6 +313,18 @@ class ArmSpec:
                                   self.placement_source)
 
     @property
+    def placement_verified(self) -> bool:
+        """True only if this arm sits where someone measured, or at the origin.
+
+        The origin needs no measurement because the first arm defines the
+        frame. Everything else does.
+        """
+        if self.at_origin:
+            return True
+        s = (self.placement_source or "").strip()
+        return bool(s) and not is_placeholder(s) and not s.upper().startswith("TODO")
+
+    @property
     def at_origin(self) -> bool:
         return (tuple(self.base_position_m) == (0.0, 0.0, 0.0)
                 and tuple(self.base_orientation_wxyz) == (1.0, 0.0, 0.0, 0.0))
@@ -345,6 +377,77 @@ def yam_arm_spec(joint_lower, joint_upper, *, name: str = "yam",
         base_orientation_wxyz=tuple(base_orientation_wxyz),
         placement_source=placement_source,
     )
+
+
+@dataclass
+class BimanualRig:
+    """Two arms and the geometry between them.
+
+    The between-them part is the whole difficulty. Each arm alone is a solved
+    problem -- same ArmSpec, same solver, same drive. What is NOT solved
+    without a measurement is where the second base sits relative to the first,
+    and that single number decides whether every two-handed reach in the scene
+    is right or quietly wrong by however far the guess was off.
+
+    So the rig knows whether it is trustworthy and says so. `verified` is False
+    while any arm sits at an unmeasured offset, and anything that writes a
+    demonstration refuses on that basis rather than producing data that looks
+    fine and encodes the wrong geometry.
+    """
+
+    arms: list[ArmSpec]
+
+    def __post_init__(self) -> None:
+        if len(self.arms) < 1:
+            raise ValueError("a rig needs at least one arm")
+        names = [a.name for a in self.arms]
+        if len(set(names)) != len(names):
+            raise ValueError(f"two arms share a name: {sorted(names)}")
+        at_origin = [a.name for a in self.arms if a.at_origin]
+        if len(at_origin) > 1:
+            raise ValueError(
+                f"{len(at_origin)} arms are at the origin ({sorted(at_origin)}). "
+                f"Exactly one arm defines the frame; the rest are placed "
+                f"relative to it.")
+
+    def __getitem__(self, name: str) -> ArmSpec:
+        for a in self.arms:
+            if a.name == name:
+                return a
+        raise KeyError(f"no arm named {name!r}; have {[a.name for a in self.arms]}")
+
+    def __len__(self) -> int:
+        return len(self.arms)
+
+    @property
+    def names(self) -> list[str]:
+        return [a.name for a in self.arms]
+
+    @property
+    def verified(self) -> bool:
+        return all(a.placement_verified for a in self.arms)
+
+    @property
+    def unverified_arms(self) -> list[str]:
+        return [a.name for a in self.arms if not a.placement_verified]
+
+    def why_unverified(self) -> str:
+        rows = [f"  {a.name}: base {a.base_position_m} <- "
+                f"{a.placement_source or '(no source)'}"
+                for a in self.arms if not a.placement_verified]
+        return "the rig geometry is NOT measured:" + chr(10) + chr(10).join(rows) if rows else ""
+
+    def require_verified(self, what: str) -> None:
+        """Raise unless every arm placement is a real measurement.
+
+        Called by anything that saves a demonstration. A demo recorded on a
+        guessed base offset trains a policy on a robot that does not exist, and
+        the error is invisible in the recorded data.
+        """
+        if not self.verified:
+            raise UnsourcedPlacement(
+                f"refusing to {what}: {self.why_unverified()}" + chr(10)
+                + "Supply the measured offset between the arm bases.")
 
 
 @dataclass

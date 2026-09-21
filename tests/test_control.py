@@ -20,9 +20,10 @@ import math
 import numpy as np
 import pytest
 
-from labgen.control import (IK_EPS, YAM_JAWS, ArmSpec, GraspTooWide, IKResult,
-                            JawModel, Trajectory, UnsourcedPlacement, jacobian,
-                            lerp_path, pad_to_longest, solve_pose)
+from labgen.control import (IK_EPS, YAM_JAWS, YAM_PAD, ArmSpec, BimanualRig,
+                            FingerPad, GraspTooWide, IKResult, JawModel,
+                            Trajectory, UnsourcedPlacement, is_placeholder,
+                            jacobian, lerp_path, pad_to_longest, solve_pose)
 
 LINKS = (0.30, 0.25, 0.20)
 REACH = sum(LINKS)
@@ -397,3 +398,134 @@ def test_the_controller_imports_without_a_physics_engine():
     assert out.returncode == 0, out.stderr
     leaked = [m for m in out.stdout.strip().split(",") if m]
     assert not leaked, f"importing the controller dragged in {leaked}"
+
+
+# --- the rig, where a bimanual setup goes quietly wrong --------------------
+
+def rig(second_source="calipers on the mount plate, 2026-09-21"):
+    left = spec(name="arm_left")
+    right = spec(name="arm_right", base_position_m=(0.44, 0.0, 0.0),
+                 placement_source=second_source)
+    return BimanualRig([left, right])
+
+
+def test_a_measured_rig_is_verified():
+    r = rig()
+    assert r.verified and r.unverified_arms == []
+    assert r.why_unverified() == ""
+
+
+def test_a_placeholder_offset_builds_but_does_not_verify():
+    """A PLACEHOLDER is the difference between "cannot proceed" and "can
+    proceed but must not be trusted".
+
+    A TODO blocks, because it means there is no number. A placeholder passes,
+    because the rest of the stack has to be buildable before the tape measure
+    comes out -- and it poisons `verified` so nothing that writes training data
+    will accept it.
+    """
+    r = rig("PLACEHOLDER 440 mm along +x, not a measurement")
+    assert not r.verified
+    assert r.unverified_arms == ["arm_right"]
+    assert "NOT measured" in r.why_unverified()
+    assert "arm_right" in r.why_unverified()
+
+
+def test_a_todo_offset_does_not_even_build():
+    with pytest.raises(UnsourcedPlacement):
+        rig("TODO ask the lab")
+
+
+def test_recording_is_refused_on_an_unmeasured_rig():
+    """The whole point of tracking this. A demo recorded on a guessed base
+    offset trains a policy on a robot that does not exist, and the error is
+    invisible in the recorded data."""
+    r = rig("PLACEHOLDER 440 mm along +x")
+    with pytest.raises(UnsourcedPlacement, match="refusing to record"):
+        r.require_verified("record a demonstration")
+    rig().require_verified("record a demonstration")      # measured: fine
+
+
+def test_exactly_one_arm_may_define_the_frame():
+    with pytest.raises(ValueError, match="at the origin"):
+        BimanualRig([spec(name="a"), spec(name="b")])
+
+
+def test_two_arms_cannot_share_a_name():
+    with pytest.raises(ValueError, match="share a name"):
+        BimanualRig([spec(name="arm"), spec(name="arm",
+                                            base_position_m=(0.44, 0.0, 0.0),
+                                            placement_source="measured")])
+
+
+def test_a_rig_needs_at_least_one_arm():
+    with pytest.raises(ValueError, match="at least one arm"):
+        BimanualRig([])
+
+
+def test_arms_are_addressable_by_name():
+    r = rig()
+    assert r["arm_right"].base_position_m == (0.44, 0.0, 0.0)
+    assert r.names == ["arm_left", "arm_right"]
+    assert len(r) == 2
+    with pytest.raises(KeyError):
+        _ = r["arm_middle"]
+
+
+def test_a_single_arm_rig_is_verified_without_any_measurement():
+    """One arm defines the frame, so the origin is not a claim about anything."""
+    assert BimanualRig([spec(name="arm_left")]).verified
+
+
+def test_placeholder_detection_is_not_fooled_by_case_or_padding():
+    assert is_placeholder("  placeholder whatever ")
+    assert not is_placeholder("measured with calipers")
+    assert not is_placeholder("")
+
+
+# --- the finger pad -------------------------------------------------------
+
+def test_the_shipped_pad_is_flagged_unverified():
+    """It came off the URDF mesh, not off real hardware. Until calipers say
+    otherwise it must not pass as a measurement."""
+    assert not YAM_PAD.verified
+    assert "NOT caliper-verified" in YAM_PAD.source
+
+
+def test_the_pad_is_far_smaller_than_the_hull_it_replaces():
+    """The hull spans +/-36 mm, i.e. 72 mm across, and engulfs a 70 mm beaker.
+    The real jaw is a quarter of that."""
+    assert YAM_PAD.width_m < 0.030
+    assert YAM_PAD.length_m < 0.030
+
+
+def test_pad_half_extents_are_ordered_width_thickness_length():
+    hx, hy, hz = YAM_PAD.half_extents_m
+    assert hx == pytest.approx(YAM_PAD.width_m / 2)
+    assert hy == pytest.approx(YAM_PAD.thickness_m / 2)
+    assert hz == pytest.approx(YAM_PAD.length_m / 2)
+
+
+def test_the_two_pads_are_mirrored():
+    left, right = YAM_PAD.centre_for(1), YAM_PAD.centre_for(-1)
+    assert left[0] == pytest.approx(-right[0])
+    assert left[1] == pytest.approx(-right[1])
+    assert left[2] == pytest.approx(right[2]), "both sit at the same depth"
+
+
+def test_a_pad_without_a_source_is_rejected():
+    with pytest.raises(ValueError, match="needs a source"):
+        FingerPad(width_m=0.02, length_m=0.02, thickness_m=0.005,
+                  centre_m=(0, 0, 0), source="")
+
+
+def test_a_pad_cannot_claim_verified_on_a_todo():
+    with pytest.raises(ValueError, match="needs a real source"):
+        FingerPad(width_m=0.02, length_m=0.02, thickness_m=0.005,
+                  centre_m=(0, 0, 0), source="TODO calipers", verified=True)
+
+
+def test_a_zero_sized_pad_is_rejected():
+    with pytest.raises(ValueError, match="must be positive"):
+        FingerPad(width_m=0.0, length_m=0.02, thickness_m=0.005,
+                  centre_m=(0, 0, 0), source="measured")

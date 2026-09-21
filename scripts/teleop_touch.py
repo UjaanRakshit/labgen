@@ -79,7 +79,8 @@ PAGE = """<!doctype html>
          color:var(--fg); font-size:17px; font-weight:600; letter-spacing:.03em;
          height:62px; flex:1; }
   .btn.live { background:var(--live); border-color:var(--live); color:#120d07; }
-  .btn.sm { flex:0 0 96px; font-size:14px; font-weight:500; }
+  .btn.sm { flex:1; font-size:14px; font-weight:500; }
+  .btn.on { background:var(--accent); border-color:var(--accent); color:#06201e; }
   #grip { flex:1; accent-color:var(--accent); height:44px; }
   #status { color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums;
             display:flex; justify-content:space-between; gap:10px; }
@@ -93,9 +94,11 @@ PAGE = """<!doctype html>
     <div id="zstrip">Z</div>
   </div>
   <div class="row">
-    <input id="grip" type="range" min="0" max="100" value="0">
+    <button id="armL" class="btn sm on">LEFT</button>
+    <button id="armR" class="btn sm">RIGHT</button>
     <button id="rec" class="btn sm">RECENTRE</button>
   </div>
+  <div class="row"><input id="grip" type="range" min="0" max="100" value="0"></div>
   <div class="row"><button id="go" class="btn">ENGAGE</button></div>
 </div>
 <script>
@@ -103,6 +106,22 @@ const pad=document.getElementById('pad'), zs=document.getElementById('zstrip');
 const go=document.getElementById('go'), rec=document.getElementById('rec');
 const grip=document.getElementById('grip'), rate=document.getElementById('rate');
 const posEl=document.getElementById('pos');
+const armL=document.getElementById('armL'), armR=document.getElementById('armR');
+
+// Which arm this device drives. Two phones can open this page and pick one
+// each; the sim routes on the `hand` field and neither device knows the other
+// exists. A single phone can also switch, which is how one person tests a
+// bimanual scene alone.
+let hand = new URLSearchParams(location.search).get('hand') || 'left';
+function setHand(h){
+  hand = h;
+  armL.classList.toggle('on', h === 'left');
+  armR.classList.toggle('on', h === 'right');
+  // Switching arms must not carry the previous arm's accumulated offset over,
+  // or the new arm lurches by however far the old one had travelled.
+  X = Y = Z = 0;
+  setEngaged(false);
+}
 
 // Cumulative, like a trackpad -- NOT the absolute position of the finger in the
 // pad. With an absolute pad, lifting your finger and putting it down somewhere
@@ -136,17 +155,20 @@ function setEngaged(v){
 // A TOGGLE, not hold-to-move. Holding a button while dragging with the same
 // hand is the thing that made this unusable.
 go.addEventListener('click',()=>setEngaged(!engaged));
+armL.addEventListener('click',()=>setHand('left'));
+armR.addEventListener('click',()=>setHand('right'));
 rec.addEventListener('click',()=>{ X=Y=Z=0; });
 // Still auto-stops if the page goes away: an arm that keeps moving because the
 // phone locked is the worst failure available.
 document.addEventListener('visibilitychange',()=>{ if(document.hidden) setEngaged(false); });
 
 async function tick(){
-  posEl.textContent='x '+(X*1000).toFixed(0)+'  y '+(Y*1000).toFixed(0)
-                    +'  z '+(Z*1000).toFixed(0)+' mm';
+  posEl.textContent=hand.toUpperCase()+'  x '+(X*1000).toFixed(0)
+                    +'  y '+(Y*1000).toFixed(0)+'  z '+(Z*1000).toFixed(0)+' mm';
   const body=JSON.stringify({
     position:{x:X, y:Y, z:Z}, orientation:{w:1,x:0,y:0,z:0},
-    move:engaged, gripper:(+grip.value)/100.0, scale:1.0, seq:++sent });
+    move:engaged, gripper:(+grip.value)/100.0, scale:1.0,
+    seq:++sent, hand:hand });
   try{ await fetch('/pose',{method:'POST',body,
        headers:{'Content-Type':'application/json'},keepalive:true}); }
   catch(err){ fails++; }
@@ -342,7 +364,9 @@ def make_handler(fan: Fanout, state: dict, store: "FrameStore"):
                 return
             msg["t"] = time.time()
             msg["device"] = "touch"
-            msg["hand"] = state["hand"]
+            # The page picks the arm; the server only supplies a default
+            # for a client that never said.
+            msg.setdefault("hand", state["hand"])
             state["samples"] += 1
             fan.broadcast((json.dumps(msg) + "\n").encode("utf-8"))
     return Handler
