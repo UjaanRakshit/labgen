@@ -66,6 +66,19 @@ CONTROL_HZ = 60.0
 # real time. The cost is a few millimetres of resting penetration: visible,
 # tolerable while driving, not acceptable for recorded demonstrations.
 
+# Contact buffer size. The default is sized for the single-arm scene; a second
+# arm overflows it, and MuJoCo says so once and then DROPS contacts:
+#
+#     narrowphase overflow - please increase nconmax to 67
+#
+# Dropped contacts are not a slowdown, they are missing forces: bodies
+# interpenetrate unopposed and the scene explodes some minutes later with no
+# input at all. That is what "diverged -- stopping" was. Sized well above the
+# observed peak so a third arm or a busier bench does not silently reintroduce
+# it.
+NCONMAX = 512
+NJMAX = 2048
+
 DOWN = np.array([0.0, 0.0, -1.0])
 LOOK_AT = np.array([0.22, 0.30, 0.10])
 EYE = LOOK_AT + np.array([0.55, -0.85, 0.65])
@@ -242,7 +255,8 @@ def main() -> int:
 
     model, arms = build(args.scene_usda, args.urdf, rig,
                         collide=not args.no_collide)
-    solver = newton.solvers.SolverMuJoCo(model, iterations=10, ls_iterations=20)
+    solver = newton.solvers.SolverMuJoCo(model, iterations=10, ls_iterations=20,
+                                         nconmax=NCONMAX, njmax=NJMAX)
 
     # Drag axes align to the CAMERA, not the robot base: "drag up the screen"
     # has to mean "push away from the viewer" or the operator does mental
