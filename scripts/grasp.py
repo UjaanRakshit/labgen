@@ -184,3 +184,43 @@ def with_fingers(q_arm: np.ndarray, finger: float) -> np.ndarray:
     out[:N_ARM] = np.asarray(q_arm, float)[:N_ARM]
     out[N_ARM:] = finger
     return out
+
+
+def use_pad_colliders(builder, pad, n_tips: int = 2, verbose: bool = True):
+    """Replace the fingertip hull colliders with two authored pad boxes.
+
+    Call AFTER add_urdf(parse_visuals_as_colliders=True) and BEFORE finalize().
+    The arm links keep their mesh colliders -- they still have to not go through
+    the bench -- but the two fingertips lose theirs, because a convex hull of an
+    L-shaped bracket is not a gripper.
+
+    Returns (disabled, added).
+    """
+    import newton as _newton
+    import warp as wp
+
+    tip_bodies = {builder.body_count - 1 - i for i in range(n_tips)}
+    disabled = 0
+    for i in range(builder.shape_count):
+        if int(builder.shape_body[i]) in tip_bodies:
+            builder.shape_flags[i] = int(builder.shape_flags[i]) & ~int(
+                _newton.ShapeFlags.COLLIDE_SHAPES)
+            disabled += 1
+
+    hx, hy, hz = pad.half_extents_m
+    added = 0
+    for side, body in zip((1, -1), sorted(tip_bodies)):
+        cx, cy, cz = pad.centre_for(side)
+        builder.add_shape_box(
+            body,
+            xform=wp.transform(wp.vec3(cx, cy, cz), wp.quat_identity()),
+            hx=hx, hy=hy, hz=hz,
+            label=f"finger_pad_{'L' if side > 0 else 'R'}")
+        added += 1
+
+    if verbose:
+        flag = "" if pad.verified else "  (UNVERIFIED: %s)" % pad.source
+        print(f"   finger pads: disabled {disabled} mesh collider(s), added "
+              f"{added} box(es) {pad.width_m*1000:.1f} x {pad.length_m*1000:.1f} "
+              f"x {pad.thickness_m*1000:.1f} mm{flag}")
+    return disabled, added

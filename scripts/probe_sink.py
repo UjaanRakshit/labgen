@@ -66,26 +66,31 @@ def settle(path, dt=1/240, secs=2.0, ke=None, kd=None):
 KE = float(sys.argv[1]) if len(sys.argv) > 1 else None
 DT = 1.0 / float(sys.argv[2]) if len(sys.argv) > 2 else 1 / 240
 KD = float(sys.argv[3]) if len(sys.argv) > 3 else None
-print(f"contact ke = {KE if KE is not None else 'import default (2500)'}, "
-      f"kd = {KD if KD is not None else 'ke/25'}, dt = 1/{1 / DT:.0f} s")
-print(f"{'vessel':24} {'wall':>6} {'base_d':>7} {'area':>8} {'mass':>7} {'press':>7} {'sink':>8}")
-print(f"{'':24} {'mm':>6} {'mm':>7} {'mm2':>8} {'g':>7} {'Pa':>7} {'mm':>8}")
-rows = []
-for key in VESSELS:
-    it = CATALOG[key]
-    d = it.dims
-    wall = d["wall"] * 1000
-    base_d = (d.get("base_d") or d.get("outer_d")) * 1000
-    area = math.pi * (base_d / 2) ** 2
-    press = it.mass_kg * 9.81 / (area * 1e-6)
-    sink = settle(scene_for(key), dt=DT, ke=KE, kd=KD) * 1000
-    rows.append((key, wall, base_d, area, it.mass_kg * 1000, press, sink))
-    flag = "  <-- over 2 mm" if abs(sink) > 2.0 else ""
-    print(f"{key:24} {wall:6.1f} {base_d:7.1f} {area:8.0f} {it.mass_kg*1000:7.1f} "
-          f"{press:7.0f} {sink:8.2f}{flag}")
+# Guarded so this file can be IMPORTED for its helpers without running the
+# whole 12-vessel table as a side effect. probe_solref.py imports scene_for
+# and settle from here; without the guard, importing them silently re-ran
+# every vessel first and the caller looked like it had hung.
+if __name__ == "__main__":
+    print(f"contact ke = {KE if KE is not None else 'import default (2500)'}, "
+          f"kd = {KD if KD is not None else 'ke/25'}, dt = 1/{1 / DT:.0f} s")
+    print(f"{'vessel':24} {'wall':>6} {'base_d':>7} {'area':>8} {'mass':>7} {'press':>7} {'sink':>8}")
+    print(f"{'':24} {'mm':>6} {'mm':>7} {'mm2':>8} {'g':>7} {'Pa':>7} {'mm':>8}")
+    rows = []
+    for key in VESSELS:
+        it = CATALOG[key]
+        d = it.dims
+        wall = d["wall"] * 1000
+        base_d = (d.get("base_d") or d.get("outer_d")) * 1000
+        area = math.pi * (base_d / 2) ** 2
+        press = it.mass_kg * 9.81 / (area * 1e-6)
+        sink = settle(scene_for(key), dt=DT, ke=KE, kd=KD) * 1000
+        rows.append((key, wall, base_d, area, it.mass_kg * 1000, press, sink))
+        flag = "  <-- over 2 mm" if abs(sink) > 2.0 else ""
+        print(f"{key:24} {wall:6.1f} {base_d:7.1f} {area:8.0f} {it.mass_kg*1000:7.1f} "
+              f"{press:7.0f} {sink:8.2f}{flag}")
 
-a = np.array([[r[1], r[3], r[5], abs(r[6])] for r in rows if np.isfinite(r[6])])
-if len(a) > 3:
-    print("\ncorrelation of |sink| with:")
-    for name, col in (("wall thickness", 0), ("base area", 1), ("contact pressure", 2)):
-        print(f"   {name:18} r = {np.corrcoef(a[:, col], a[:, 3])[0,1]:+.3f}")
+    a = np.array([[r[1], r[3], r[5], abs(r[6])] for r in rows if np.isfinite(r[6])])
+    if len(a) > 3:
+        print("\ncorrelation of |sink| with:")
+        for name, col in (("wall thickness", 0), ("base area", 1), ("contact pressure", 2)):
+            print(f"   {name:18} r = {np.corrcoef(a[:, col], a[:, 3])[0,1]:+.3f}")

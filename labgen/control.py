@@ -48,6 +48,8 @@ __all__ = [
     "Trajectory",
     "Waypoint",
     "YAM_JAWS",
+    "FingerPad",
+    "YAM_PAD",
     "YAM_N_ARM",
     "YAM_N_FINGER",
     "yam_arm_spec",
@@ -181,6 +183,66 @@ YAM_JAWS = JawModel(
     gap_closed_m=0.00006,
     gap_open_m=0.09406,
     source="measured from i2rt YAM URDF finger meshes, scripts/probe_gap2.py",
+)
+
+
+@dataclass(frozen=True)
+class FingerPad:
+    """The gripping face of one finger, as a box.
+
+    This exists because deriving finger colliders from the visual mesh does not
+    work. The fingertip is an L-shaped bracket, so its convex hull spans
+    +/-36 mm and bridges the jaw to the mount. Two of those hulls start deeply
+    overlapped with any object between them, and the solver resolves that by
+    ejecting it -- measured at 9.7 metres of beaker displacement.
+
+    The jaw itself is small. Measured off the URDF's own tip mesh by taking the
+    slab within 8 mm of the face that looks at the other finger
+    (scripts/probe_padbox.py): about 25.7 mm wide by 19.5 mm long.
+
+    `verified` is False until someone puts calipers on the real pads, and it
+    means the same thing here as on a CatalogItem: a number nobody measured on
+    real hardware must not be presented as one that was.
+    """
+
+    width_m: float           # across the jaw face
+    length_m: float          # along the finger
+    thickness_m: float       # into the finger, away from the face
+    centre_m: tuple[float, float, float]
+    source: str
+    verified: bool = False
+
+    def __post_init__(self) -> None:
+        for name in ("width_m", "length_m", "thickness_m"):
+            if getattr(self, name) <= 0.0:
+                raise ValueError(f"{name} must be positive")
+        if not (self.source or "").strip():
+            raise ValueError("a finger pad needs a source: where did these "
+                             "dimensions come from?")
+        if self.verified and self.source.strip().upper().startswith("TODO"):
+            raise ValueError("verified=True needs a real source, not a TODO")
+
+    @property
+    def half_extents_m(self) -> tuple[float, float, float]:
+        return (self.width_m / 2.0, self.thickness_m / 2.0, self.length_m / 2.0)
+
+    def centre_for(self, side: int) -> tuple[float, float, float]:
+        """Pad centre for one finger. `side` is +1 or -1; the pair is mirrored
+        across the plane the jaws close on."""
+        x, y, z = self.centre_m
+        return (side * x, side * y, z)
+
+
+# Derived from the mesh, NOT from calipers. Ujaan is measuring the real pads;
+# until those numbers arrive this is flagged unverified everywhere it is used.
+YAM_PAD = FingerPad(
+    width_m=0.0257,
+    length_m=0.0195,
+    thickness_m=0.0079,
+    centre_m=(0.0029, -0.0007, -0.0061),
+    source="derived from the i2rt yam.urdf fingertip mesh, "
+           "scripts/probe_padbox.py -- NOT caliper-verified",
+    verified=False,
 )
 
 

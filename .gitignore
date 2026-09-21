@@ -12,3 +12,5 @@ out/
 # in would let a stale mesh disagree with a corrected catalog dimension.
 assets/generated/
 .venv-usd/
+.venv-teleop/
+.venv-usd/
