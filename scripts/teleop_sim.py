@@ -42,7 +42,7 @@ from newton.viewer import ViewerGL
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from arm_drive import configure_real_drives, gravity_torques            # noqa: E402
-from grasp import set_state, GraspFK, N_ARM, use_pad_colliders, with_fingers         # noqa: E402
+from grasp import set_state, GraspFK, N_ARM, use_pad_colliders, with_fingers, enable_pad_torsion         # noqa: E402
 
 sys.path.insert(0, "/mnt/c/Ujaan Docx/Research/labgen")
 from labgen.control import (YAM_JAWS, YAM_PAD, ArmSpec, BimanualRig,      # noqa: E402
@@ -179,7 +179,8 @@ class ArmInstance:
 
 
 def build(scene_usda: Path, urdf: Path, rig: BimanualRig, collide: bool = True,
-          contact: tuple[float, float] | None = None, finger_force_n: float | None = None):
+          contact: tuple[float, float] | None = None, finger_force_n: float | None = None,
+          pad_torsion_m: float | None = None):
     """Scene plus one arm per rig entry, each at its own base transform.
 
     `contact=(ke, kd)` overrides every shape's contact parameters. Teleop leaves
@@ -189,6 +190,10 @@ def build(scene_usda: Path, urdf: Path, rig: BimanualRig, collide: bool = True,
 
     `finger_force_n` sets the per-finger force limit, so a grip-force sweep can
     rebuild with a different ceiling without editing the drive defaults.
+
+    `pad_torsion_m` gives the pads torsional friction (grasp.enable_pad_torsion);
+    None leaves Newton's condim=3, under which a rim-held beaker pivots freely
+    about the grip axis.
     """
     builder = newton.ModelBuilder()
     builder.add_usd(str(scene_usda))
@@ -238,6 +243,11 @@ def build(scene_usda: Path, urdf: Path, rig: BimanualRig, collide: bool = True,
             start, stop, _ = inst.dofs.indices(builder.joint_dof_count)
             for d in range(stop - 2, stop):
                 builder.joint_effort_limit[d] = finger_force_n
+
+    if pad_torsion_m is not None:
+        if not collide:
+            raise ValueError("pad torsion needs the pad colliders (collide=True)")
+        enable_pad_torsion(builder, pad_torsion_m)
 
     model = builder.finalize()
     # Arms were appended in order, so each owns a contiguous run of bodies at

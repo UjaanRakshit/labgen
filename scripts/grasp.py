@@ -250,6 +250,52 @@ def use_pad_colliders(builder, pad, n_tips: int = 2, verbose: bool = True):
     return disabled, added
 
 
+# Torsional friction at the pads: what stops a beaker held at its rim from
+# swinging about the line between the two pads. Newton hands MuJoCo a
+# coefficient for it (mu_torsional, default 0.005) but leaves every shape at
+# condim=3 -- sliding friction only -- so that coefficient is carried and never
+# used, and the beaker pivots in a grip that is not slipping at all. Measured:
+# 4.1 mm of "slip" at the base on every trial at every force, which is a 2.8 deg
+# pivot about the grip axis, not a slide.
+#
+# In MuJoCo the torsional coefficient is a LENGTH: max twisting torque =
+# coefficient * normal force. For a pad pressed along a line against a
+# cylinder that is roughly mu * (contact length) / 4 -- 0.45 * 17.7 mm / 4 =
+# 2.0 mm for these pads -- so the 5 mm default is the right order and not
+# conservative.
+PAD_TORSION_M = 0.005
+PAD_TORSION_SOURCE = ("UNVERIFIED: Newton/MuJoCo default mu_torsional; depends "
+                      "on the real pad material and contact patch, never measured")
+
+
+def enable_pad_torsion(builder, mu_torsional_m: float = PAD_TORSION_M,
+                       verbose: bool = True) -> int:
+    """Give the finger pads torsional friction (MuJoCo condim=4).
+
+    Call on the MERGED builder, after every arm is added and before finalize().
+    The pads are found by the labels use_pad_colliders gives them, so this is a
+    no-op, loudly, if the pads were never authored. Returns the pad count.
+    """
+    from newton.solvers import SolverMuJoCo
+
+    if "mujoco:condim" not in builder.custom_attributes:
+        SolverMuJoCo.register_custom_attributes(builder)
+    attr = builder.custom_attributes["mujoco:condim"]
+    if attr.values is None:
+        attr.values = {}
+    pads = [i for i, lab in enumerate(builder.shape_label)
+            if str(lab).startswith("finger_pad_")]
+    if not pads:
+        raise RuntimeError("no finger_pad_* shapes; call use_pad_colliders first")
+    for i in pads:
+        attr.values[i] = 4
+        builder.shape_material_mu_torsional[i] = mu_torsional_m
+    if verbose:
+        print(f"   pad torsion: condim 4 on {len(pads)} pad(s), "
+              f"mu_torsional {mu_torsional_m*1000:.1f} mm  ({PAD_TORSION_SOURCE})")
+    return len(pads)
+
+
 def set_state(model, state, joint_q) -> None:
     """Put a simulation state at `joint_q`, at rest. Use this, not eval_fk alone.
 
