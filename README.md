@@ -143,18 +143,31 @@ measured, not chosen:
 - `collision_type="Convex Decomposition"` — *not* the converter's `"Convex
   Hull"` default, which turns each L-shaped fingertip into a block spanning
   ±36 mm and swallows a 70 mm beaker.
-- `joint_effort_limit=10.0` — the robot's **own** rating. An earlier version of
-  this file ran at 40 and said so, on the strength of a real measurement (the
-  shoulder sagged 48.7° holding a grasp pose at 10 N·m) and a wrong conclusion.
-  Static gravity torque at that pose, summed from the link masses, is
-  **7.26 N·m** on a 4.111 kg arm — comfortably inside the rating. The sag was
-  the position gain: a PD controller with no gravity feedforward has to generate
-  the whole 7.26 N·m out of tracking error, and at `stiffness=300` it saturates
-  before it gets there. At `stiffness=3000` the same pose holds to **0.19°** on
-  10 N·m, and raising the limit to 40 changes the result not at all. The
-  original change moved effort and stiffness together and credited the wrong
-  one. Retracted, because "this robot cannot do this task" is the most expensive
-  kind of wrong answer this project can produce.
+- **Actuators are the real robot's, per joint**, copied from the i2rt 1.1.2
+  config the rig runs (`labgen.hardware.YAM_V1`): j1–3 DM4340 (28 N·m peak,
+  kp 80, kd 5), j4–6 DM4310 (10 N·m, kp 10, kd 1.5), emitted as two actuator
+  groups. Isaac Lab accepts the result (`scripts/verify_cfg.py`).
+
+  This replaced a history of three wrong answers about the arm's torque, each of
+  which was believed at the time:
+  1. It once ran at 40 N·m "against the rated 10" because the shoulder sagged at
+     10. The sag was a missing gravity feedforward, not a ceiling.
+  2. The retraction then called 10 N·m "the robot's rating" and quoted gravity at
+     the grasp pose as 7.26 N·m. That figure put each link's weight at its frame
+     origin instead of its centre of mass — 133 mm off for link2, 150 mm for
+     link3. Corrected: **9.71 N·m** at the grasp pose, **10.60 N·m** at the
+     worst pose of the task plan.
+  3. And 10 N·m was never the shoulder's rating. It is i2rt's simplified MJCF;
+     the DM4340 peaks at 28. So the plan is over a 10 N·m limit and at 38% of
+     the real motor.
+
+  The centre-of-mass error hid behind the old kp=3000, which absorbs a bad
+  feedforward. It surfaced the moment the sim ran the real kp=80, as 2.4° of
+  sag with the feedforward on; corrected, 0.03°.
+
+  Not emitted: joint friction (real: 0.3 / 0.06 N·m Coulomb), because Isaac
+  Lab's `friction` field is a torque on one backend and a coefficient on
+  another; and armature, because no one has recorded the rotor inertia.
 
 Rotations are emitted `(x, y, z, w)`. Isaac Lab 3.0 changed from the older
 wxyz; `SceneSpec` stores wxyz and they are reordered.
@@ -179,15 +192,22 @@ are:
   range. The beaker was clearing the gate by 0.7 mm of luck while exhibiting the
   same failure as the dish.
 
-  The cause was contact stiffness and timestep, which are **one setting, not
-  two** — a penetration contact is stable only while the stiffness is small
-  relative to what the timestep can integrate, so sweeping either alone finds an
-  optimum that is an artifact of the other's fixed value. Both earlier
-  one-dimensional readings were exactly that. Moved together the surface is
-  monotone: at `ke=160000, dt=1/960` every vessel lands under 0.1 mm, and
-  160 kN/m is also the honest direction, since glass on a steel benchtop is far
-  stiffer than the importer's default 2500 N/m. `bench_5` worst 0.598 mm,
-  `bench_arm` worst 0.306 mm.
+  The cause was the contact time constant, and it is bounded by the timestep.
+  Sweeping `ke` and `dt` separately found optima that were artifacts of the
+  other's fixed value; moved together, `ke=160000, kd=800, dt=1/960` puts every
+  vessel under 0.1 mm (`bench_5` worst 0.598 mm, `bench_arm` worst 0.306 mm).
+
+  **An earlier version of this paragraph justified that as "glass on steel is
+  far stiffer than the importer's 2500 N/m". That was wrong.** `ke` is not a
+  stiffness on this solver: Newton passes both values to MuJoCo via
+  `convert_solref`, giving `timeconst = 2/kd` and `dampratio = kd/(2√ke)`. So
+  the shipped values mean a 2.5 ms time constant at exactly critical damping —
+  and the importer default was *also* critical, so what changed was the time
+  constant, 20 ms → 2.5 ms. Measured (`scripts/probe_solref.py`), sink scales
+  as timeconst² (roughly 70× less for 8× shorter), but the tidy law
+  `sink = g·tc²` does not hold: the prefactor varies ~7× between vessels with
+  contact geometry. MuJoCo also needs `timeconst ≥ 2·dt`, which is what forces
+  `dt` down to 1/960.
 
   `convex_decomposition` reaches the same green number by **sealing the dish** —
   a tube dropped in rests on the rim at 23 mm. The stiffness fix makes the

@@ -32,6 +32,7 @@ import textwrap
 from pathlib import Path
 
 from .control import require_sourced_placement
+from .hardware import YAM_V1
 from .types import SceneObject, SceneSpec
 from .validate import YAM, RobotSpec
 
@@ -102,6 +103,12 @@ YAM_ARM = ArmSource(
          "declares effort=1 N.m on every joint, which Isaac will honour over "
          "anything configured here.",
 )
+
+
+# The real rig's recorded reset pose, joints 1-6 (rad). From
+# pairlab/yam_teleop/deployment/config.yaml, which cites
+# balancing_act/yam_home.json. A pose the real arm actually holds.
+RESET_POSE_RAD = (0.0, 1.5886, 0.9016, 1.0007, 0.6594, 0.0)
 
 
 def _wxyz_to_xyzw(q):
@@ -259,28 +266,27 @@ def _emit_arm(arm: ArmSource, robot: RobotSpec) -> str:
          and arm.base_orientation_wxyz == (1.0, 0.0, 0.0, 0.0)
          else f"# Base placement source: {arm.placement_source}"),
         "#",
-        "# The effort limit is the robot's own rating, not a raised one.",
-        "# Static gravity torque at a 0.409 m grasp pose is 7.26 N.m at the",
-        "# shoulder (4.111 kg arm), inside the rated 10. An earlier version ran",
-        "# at 40 because the shoulder sagged at 10 -- but that was the position",
-        "# gain, not the ceiling: a PD with no gravity feedforward must produce",
-        "# the whole 7.26 N.m through position error, and at ke=300 it saturates",
-        "# first. At ke=3000 it holds to 0.19 deg on 10 N.m, and raising the",
-        "# limit to 40 changes nothing.",
+        "# Actuators are the REAL robot's, per joint, from the i2rt config the",
+        f"# rig runs ({YAM_V1.source}).",
+        "# j1-3 are DM4340 (28 N.m peak, 10 rad/s), j4-6 DM4310 (10 N.m, 30",
+        "# rad/s); kp 80 / 10, kd 5 / 1.5. An earlier version emitted kp 3000",
+        "# and 10 N.m on every joint -- a stiffness chosen to make the arm hold",
+        "# still, 37x the real shoulder and 300x the real wrist, and a torque",
+        "# limit that is i2rt's simplified MJCF rather than the motors. At the",
+        "# worst pose of a pick-and-place plan gravity needs 10.60 N.m at j2:",
+        "# OVER a 10 N.m limit, but 38% of the DM4340's 28.",
         "#",
-        "# Holding is not the whole story, and the gap matters to anyone who",
-        "# drives this config along a trajectory. Gravity alone peaks at 8.06",
-        "# N.m at joint 2 over a pick-and-place plan -- inside the rating, but",
-        "# 81% of it. A position PD with no gravity feedforward must produce",
-        "# that from tracking error, so it idles at 81% saturation and has",
-        "# ~1.9 N.m left for motion; the arm then saturates on the first",
-        "# millimetre of lag and tracking blows out to 100 deg. Slowing the",
-        "# trajectory 4x does NOT help (100.3 -> 89.9 deg), because the problem",
-        "# is not acceleration torque. Adding a gravity feedforward does: same",
-        "# 10 N.m limit, same gains, peak tracking error 3.95 deg.",
+        "# The real controller adds gravity compensation to this PD, and",
+        "# ImplicitActuatorCfg does not. With gains this soft the arm will sag",
+        "# unless you supply that feedforward -- measured in sim, 8.4 deg without",
+        "# it and 0.03 deg with it.",
         "#",
-        "# ImplicitActuatorCfg is a PD and does not compensate gravity. If you",
-        "# command trajectories through this config, add the feedforward.",
+        "# Joint friction is deliberately NOT emitted. The real arm has Coulomb",
+        "# friction of 0.3 N.m (j1-3) and 0.06 N.m (j4-6), but Isaac Lab's",
+        "# `friction` field is backend-specific -- a torque on one engine, a",
+        "# dimensionless coefficient on another -- and this config must run on",
+        "# either. Armature is also omitted: it is rotor inertia x gear ratio^2,",
+        "# and nobody has recorded the rotor inertia.",
         f"{arm.cfg_symbol} = ArticulationCfg(",
         f'    prim_path="{{ENV_REGEX_NS}}/{arm.prim_name}",',
     ]
@@ -310,16 +316,26 @@ def _emit_arm(arm: ArmSource, robot: RobotSpec) -> str:
         f"        pos={_fmt3(arm.base_position_m)},",
         f"        rot={_fmt3(_wxyz_to_xyzw(arm.base_orientation_wxyz))},"
         f"   # Isaac Lab 3.0 is (x, y, z, w)",
-        f'        joint_pos={{"{arm.joint_expr}": 0.0}},',
+        "        # The rig's recorded reset pose (yam_teleop deployment/config.yaml),",
+        "        # NOT zeros: j2 and j3 have lower limits of exactly 0, so an all-zero",
+        "        # start sits on two joint limits.",
+        "        joint_pos={" + ", ".join(
+            f'"joint{i + 1}": {v}' for i, v in enumerate(RESET_POSE_RAD)) + "},",
         "    ),",
         "    actuators={",
-        '        "arm": ImplicitActuatorCfg(',
-        f'            joint_names_expr=["{arm.joint_expr}"],',
-        "            stiffness=3000.0,",
-        "            damping=150.0,",
-        "            armature=0.02,",
-        "            joint_effort_limit=10.0,   # the YAM's own actuatorfrcrange",
-        "        ),",
+    ]
+    for group, joints, idx in (("shoulder", "joint[1-3]", 0), ("wrist", "joint[4-6]", 3)):
+        m = YAM_V1.motors[idx]
+        lines += [
+            f'        "{group}": ImplicitActuatorCfg(   # {m.name} x3',
+            f'            joint_names_expr=["{joints}"],',
+            f"            stiffness={YAM_V1.kp[idx]},",
+            f"            damping={YAM_V1.kd[idx]},",
+            f"            joint_effort_limit={m.torque_max_nm},   # peak, MIT encoding range",
+            f"            joint_velocity_limit={m.velocity_max_rad_s},",
+            "        ),",
+        ]
+    lines += [
         "    },",
         ")",
         "",

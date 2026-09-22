@@ -34,27 +34,21 @@ fk = GraspFK(m, slice(0, m.joint_coord_count))
 # Joint axes and anchors, in world, at a given configuration.
 ja = np.asarray(b.joint_axis, float) if hasattr(b, "joint_axis") else None
 
-def gravity_torques(q):
-    """Static torque each revolute joint must hold, from first principles.
+# The local copy of this function used to live here, and it put each body's
+# weight at its frame ORIGIN instead of its centre of mass -- 133 mm off for
+# link2 and 150 mm off for link3. It produced the "7.26 N.m" figure quoted in
+# the torque retraction, which was therefore also wrong. It now defers to the
+# single corrected implementation in arm_drive.
+from arm_drive import gravity_torques as _gravity_torques          # noqa: E402
 
-    tau_i = sum over links OUTBOARD of joint i of  (r_link - r_joint) x (m g)
-    projected on the joint axis. No solver involved.
-    """
+coms = np.asarray(b.body_com, float)
+
+
+def gravity_torques(q):
+    """Static torque magnitude each revolute joint must hold, per joint."""
     bodies = fk._eval(np.concatenate([q, [0.0, 0.0]]))
-    g = np.array([0.0, 0.0, -9.81])
-    taus = []
-    for i in range(N_ARM):
-        # joint i sits at body i's origin; everything from i outward loads it
-        anchor = bodies[i, :3]
-        R = quat_to_matrix(bodies[i, 3:])
-        # revolute axis in world: take it from the child frame's local axis
-        axis = R @ (np.asarray(ja[i][:3], float) if ja is not None else np.array([0, 1, 0.]))
-        axis = axis / (np.linalg.norm(axis) or 1.0)
-        t = np.zeros(3)
-        for j in range(i, len(masses)):
-            t += np.cross(bodies[j, :3] - anchor, masses[j] * g)
-        taus.append(abs(float(t @ axis)))
-    return np.array(taus)
+    return np.abs(_gravity_torques(bodies, masses, ja, coms=coms, offset=0, n_arm=N_ARM))
+
 
 for label, target in (("beaker grasp, 0.40 m reach", np.array([0.20, 0.3464, 0.083])),
                       ("full extension, 0.60 m",     np.array([0.00, 0.6000, 0.150])),

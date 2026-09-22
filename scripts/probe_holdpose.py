@@ -43,12 +43,13 @@ def run(dt, substeps, ff_sign, seconds=2.0):
 
     masses = np.asarray(arm.body_mass, float)
     axes = np.asarray(arm.joint_axis, float)
+    coms = np.asarray(arm.body_com, float)
     off = model.body_count - len(masses)
     ff = control.joint_f.numpy().copy()
     if ff_sign != 0:
         bw = fk._eval(q_cmd)
         ff[dofs.start: dofs.start + N_ARM] = ff_sign * gravity_torques(
-            bw, masses, axes, offset=off, n_arm=N_ARM)
+            bw, masses, axes, coms=coms, offset=off, n_arm=N_ARM)
         control.joint_f.assign(ff.astype(np.float32))
 
     solver = newton.solvers.SolverMuJoCo(model, iterations=10, ls_iterations=20)

@@ -39,36 +39,30 @@ DEFAULT_KE = 3000.0
 DEFAULT_KD = 150.0
 DEFAULT_ARMATURE = 0.02
 
-# RETRACTED: the arm runs inside its rated torque. It was a gain problem.
+# HISTORY OF THIS NUMBER -- three corrections, kept because each was believed.
 #
-# This file previously ran at 40 N.m against the YAM's rated 10, on the
-# strength of a measurement showing the shoulder sagging 48.7 deg at 10. That
-# measurement was real and the conclusion drawn from it was wrong.
+# 1. This file once ran at 40 N.m "against the YAM's rated 10", from a real
+#    measurement (the shoulder sagged 48.7 deg at 10) and a wrong conclusion.
+#    Retracted: the sag was a missing gravity feedforward, not a torque ceiling.
+#    Measured: effort 10/ke 3000 held to 0.19 deg; effort 40 changed nothing.
 #
-# Static gravity torque at the beaker-grasp pose, computed from the link masses
-# rather than inferred from a controller (scripts/probe_gravtorque.py):
+# 2. That retraction called 10 N.m "the robot's rating" and quoted static
+#    gravity at the grasp pose as 7.26 N.m, "inside the rated 10". Both wrong.
+#    The 7.26 came from gravity_torques putting each body's weight at its frame
+#    ORIGIN instead of its centre of mass (link2's is 133 mm away, link3's
+#    150 mm). With centre-of-mass lever arms it is 9.71 N.m at the grasp pose
+#    and 10.60 N.m at the worst pose of the task plan.
 #
-#     j1 0.00   j2 7.26   j3 3.92   j4 0.16   j5 0.00   j6 0.00   N.m
-#     total arm mass 4.111 kg, reach 0.409 m
+# 3. And 10 N.m is not the rating of joints 1-3 at all. i2rt 1.1.2 -- the
+#    version the real rig runs -- declares j1-3 DM4340 (28 N.m peak) and j4-6
+#    DM4310 (10 N.m). The uniform 10 is i2rt's simplified MJCF. So the task
+#    plan is OVER a 10 N.m limit and at 38% of the real shoulder motor.
 #
-# 7.26 N.m is INSIDE the rated 10. The arm can hold the pose. Re-measured with
-# the grasp point and gains since corrected (scripts/probe_torque2.py):
-#
-#     effort 10, ke  300  ->  sags 69.86 deg, tip 437.1 mm off
-#     effort 10, ke 3000  ->  holds  0.19 deg, tip   1.8 mm
-#     effort 40, ke 3000  ->  holds  0.19 deg, tip   1.8 mm   (identical)
-#
-# A position PD with no gravity feedforward has to produce the whole 7.26 N.m
-# through position error alone. At ke=300 that needs 0.024 rad of error before
-# the command even reaches the gravity load, and the loop saturates first. At
-# ke=3000 the same error commands ten times the torque and it holds -- on 10.
-#
-# The original fix raised the effort limit and the stiffness in one change and
-# credited the effort. Raising a torque ceiling to cure a gain deficit reads,
-# to anyone downstream, as "this robot cannot do this task" -- the most
-# expensive kind of wrong answer in a project that exists to produce trust
-# numbers.
-YAM_RATED_EFFORT_NM = 10.0
+# Per-joint real limits now live in labgen.hardware.YAM_V1, and
+# configure_real_drives applies them. This constant is kept only as the
+# simplified-MJCF value for the older callers that still use configure_drives;
+# it is NOT the robot's rating and should not be quoted as one.
+YAM_RATED_EFFORT_NM = 10.0   # i2rt MJCF simplification, NOT the j1-3 motor rating
 
 # The fingers are PRISMATIC, so their gains are N/m, not N.m/rad. Reusing the
 # arm's 300 gave 300 N/m -- a 4 mm squeeze on a beaker produced 0.6 N of grip,
@@ -154,7 +148,7 @@ def report(model: newton.Model, label: str = "") -> None:
             print(f"   {label}{name:20} {np.unique(v)[:6]}")
 
 
-def gravity_torques(bodies_world, masses, joint_axis, *, offset: int = 0,
+def gravity_torques(bodies_world, masses, joint_axis, *, coms, offset: int = 0,
                     n_arm: int = 6, g: float = 9.81):
     """Static torque each revolute joint must hold against gravity, per joint.
 
@@ -172,11 +166,37 @@ def gravity_torques(bodies_world, masses, joint_axis, *, offset: int = 0,
 
     `bodies_world` is a full-model body_q array; `offset` is where the arm's
     bodies start in it, since the scene's bodies are added first.
+
+    `coms` is each arm body's centre of mass IN ITS OWN FRAME, and it is
+    required. The first version of this function put each body's weight at its
+    frame ORIGIN, and on this arm that is badly wrong: link2 (1.47 kg) has its
+    centre of mass 133 mm from its origin and link3 (0.98 kg) 150 mm. Every
+    torque it returned used the wrong lever arm. It went unnoticed for as long as
+    the sim ran kp=3000, because a gain that stiff absorbs a bad feedforward; it
+    surfaced the moment the sim ran the real robot's kp=80, as 2.4 deg of sag
+    with the feedforward switched on. Required rather than defaulted so that the
+    wrong answer is not available by omission.
     """
     import numpy as np
 
     masses = np.asarray(masses, float)
+    coms = np.asarray(coms, float)
+    if coms.shape != (len(masses), 3):
+        raise ValueError(f"coms must be ({len(masses)}, 3), one body-frame centre "
+                         f"of mass per body; got {coms.shape}")
     gv = np.array([0.0, 0.0, -g])
+
+    def rot(qv):
+        x, y, z, w = (float(v) for v in qv)
+        return np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ])
+
+    com_world = np.array([
+        bodies_world[offset + j, :3] + rot(bodies_world[offset + j, 3:]) @ coms[j]
+        for j in range(len(masses))])
     n_links = len(masses)
     taus = np.zeros(n_arm)
     for i in range(n_arm):
@@ -193,9 +213,67 @@ def gravity_torques(bodies_world, masses, joint_axis, *, offset: int = 0,
         axis = axis / (np.linalg.norm(axis) or 1.0)
         t = np.zeros(3)
         for j in range(i, n_links):
-            t += np.cross(bodies_world[offset + j, :3] - anchor, masses[j] * gv)
+            t += np.cross(com_world[j] - anchor, masses[j] * gv)
         # SIGNED. The caller takes abs() to report a magnitude; a gravity
         # feedforward needs the sign or it doubles the load instead of
         # cancelling it.
         taus[i] = float(t @ axis)
     return taus
+
+
+def configure_real_drives(builder, hw, *, dof_slice: slice, n_fingers: int = 2,
+                          verbose: bool = True, armature_fallback: float = 0.0) -> None:
+    """Configure the arm dofs with the REAL robot's per-joint parameters.
+
+    `hw` is a labgen.hardware.ArmHardware -- kp, kd, peak torque, velocity limit
+    and Coulomb friction per joint, copied from the i2rt config the real rig
+    runs. Replaces configure_drives' single kp/kd/effort for the whole arm,
+    which was a stiffness chosen here to make the arm hold still (kp=3000
+    everywhere: 37x the real shoulder, 300x the real wrist).
+
+    Must be called AFTER the arm's builder has been merged, for the same reason
+    configure_drives must: the slice is clamped to the builder's current dof
+    count, and before the merge that clamp produces an empty range and applies
+    nothing.
+
+    Armature is not in the real config (no rotor inertia recorded), so it is set
+    to `armature_fallback` and reported as such rather than presented as known.
+    """
+    n = builder.joint_dof_count
+    start, stop, _ = dof_slice.indices(n)
+    n_arm = stop - start - n_fingers
+    if n_arm != hw.n_joints:
+        raise ValueError(
+            f"dof slice holds {n_arm} arm joints but {hw.name} describes "
+            f"{hw.n_joints}. Configure after merging the arm's builder.")
+
+    torque = hw.torque_max_nm
+    vmax = hw.velocity_max_rad_s
+    mode = int(newton.JointTargetMode.POSITION)
+    for j in range(n_arm):
+        i = start + j
+        builder.joint_target_mode[i] = mode
+        builder.joint_target_ke[i] = hw.kp[j]
+        builder.joint_target_kd[i] = hw.kd[j]
+        builder.joint_effort_limit[i] = torque[j]
+        builder.joint_velocity_limit[i] = vmax[j]
+        builder.joint_friction[i] = hw.coulomb_friction_nm[j]
+        builder.joint_armature[i] = (hw.armature_kg_m2[j] if hw.armature_known
+                                     else armature_fallback)
+
+    # Fingers keep their own prismatic gains: the real gripper is not in the arm
+    # config and is not even driven by the lab's teleop ("held, not driven").
+    for i in range(start + n_arm, stop):
+        builder.joint_target_mode[i] = mode
+        builder.joint_target_ke[i] = FINGER_KE
+        builder.joint_target_kd[i] = FINGER_KD
+        builder.joint_effort_limit[i] = FINGER_EFFORT_N
+        builder.joint_armature[i] = armature_fallback
+
+    if verbose:
+        print(f"   real drives [{hw.name}]: kp {list(hw.kp)}  kd {list(hw.kd)}")
+        print(f"      peak torque {list(torque)} N.m   friction "
+              f"{list(hw.coulomb_friction_nm)} N.m")
+        if not hw.armature_known:
+            print(f"      armature UNKNOWN (no rotor inertia recorded) -> "
+                  f"{armature_fallback}")

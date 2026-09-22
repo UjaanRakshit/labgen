@@ -351,6 +351,7 @@ def main() -> int:
     # torque does not: it scales with the gain.
     arm_masses = np.asarray(arm.body_mass, float)
     arm_axes = np.asarray(arm.joint_axis, float)
+    arm_coms = np.asarray(arm.body_com, float)
     body_offset = model.body_count - len(arm_masses)
     #
     # Precomputed for every frame, not recomputed inside the loop, for exactly
@@ -358,7 +359,7 @@ def main() -> int:
     grav_ff = np.zeros((len(pl.steps), N_ARM))
     for i, st in enumerate(pl.steps):
         bw = fk._eval(st.cfg[:N_ARM])
-        grav_ff[i] = gravity_torques(bw, arm_masses, arm_axes,
+        grav_ff[i] = gravity_torques(bw, arm_masses, arm_axes, coms=arm_coms,
                                      offset=body_offset, n_arm=N_ARM)
     mags = np.abs(grav_ff)
     grav_at = int(mags.max(axis=1).argmax())

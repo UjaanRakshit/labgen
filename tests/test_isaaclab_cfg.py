@@ -196,36 +196,60 @@ def test_arm_is_fixed_to_the_bench(source):
     assert "fix_base=True" in source
 
 
-def test_effort_limit_is_the_robots_own_rating(source):
-    """The arm runs inside its spec, and the file explains why it can.
+def test_actuators_are_the_real_robots_per_joint(source):
+    """Two groups, because the real arm has two motor types.
 
-    An earlier version ran at 40 N.m against the rated 10, from a real
-    measurement (the shoulder sagged at 10) and a wrong conclusion. Static
-    gravity at that pose is 7.26 N.m; the sag was the position gain, not the
-    ceiling. Pinned because "this robot cannot do this task" is the most
-    expensive kind of wrong answer here.
+    j1-3 are DM4340 (28 N.m peak), j4-6 DM4310 (10 N.m), with the real kp/kd
+    from i2rt's yam_v1.yml. This replaced a single group at kp 3000 and 10 N.m
+    everywhere: a stiffness chosen here to make the arm hold still, and a torque
+    limit that was i2rt's simplified MJCF rather than the motors.
     """
+    assert '"shoulder": ImplicitActuatorCfg' in source
+    assert '"wrist": ImplicitActuatorCfg' in source
+    assert 'joint_names_expr=["joint[1-3]"]' in source
+    assert 'joint_names_expr=["joint[4-6]"]' in source
+    assert "stiffness=80.0" in source and "stiffness=10.0" in source
+    assert "damping=5.0" in source and "damping=1.5" in source
+    assert "joint_effort_limit=28.0" in source
     assert "joint_effort_limit=10.0" in source
-    assert "joint_effort_limit=40.0" not in source
-    assert "7.26 N.m" in source, "the gravity figure behind the decision belongs in the file"
+
+
+def test_the_old_invented_actuator_values_are_gone(source):
+    """kp 3000, kd 150 and armature 0.02 were all chosen here, not sourced."""
+    assert "stiffness=3000" not in source
+    assert "damping=150" not in source
+    assert "armature=0.02" not in source
+
+
+def test_the_shoulder_limit_is_not_the_simplified_mjcf_10_nm(source):
+    """Gravity needs 10.60 N.m at j2 at the worst pose of the task plan -- over
+    a 10 N.m limit, 38% of the DM4340's 28. Emitting 10 on the shoulder makes a
+    feasible task look infeasible."""
+    shoulder = source[source.index('"shoulder"'):source.index('"wrist"')]
+    assert "joint_effort_limit=28.0" in shoulder
+
+
+def test_friction_is_not_emitted_because_it_is_backend_specific(source):
+    """The real arm has 0.3 / 0.06 N.m Coulomb friction, but Isaac Lab's
+    `friction` field is a torque on one engine and a dimensionless coefficient
+    on another. Emitting it would be silently wrong on one of them, and this
+    config has to run on both."""
+    assert "friction=" not in source.replace("# ", "")
+    assert "backend-specific" in source
+
+
+def test_the_arm_starts_at_the_rigs_recorded_reset_pose(source):
+    """Not zeros: j2 and j3 have lower limits of exactly 0."""
+    assert '"joint2": 1.5886' in source
+    assert '"joint3": 0.9016' in source
 
 
 def test_file_warns_that_the_actuator_does_not_compensate_gravity(source):
-    """Holding the pose and executing a trajectory are different questions.
-
-    Both were answered the wrong way once. The effort limit was raised because
-    the arm sagged (it was the gain), and then the trajectory failure was blamed
-    on acceleration torque (it was not -- slowing 4x moved peak error 100.3 to
-    89.9 deg). Gravity peaks at 8.06 N.m of the rated 10 over the plan, so a PD
-    with no feedforward idles at 81% saturation. With the feedforward, the same
-    10 N.m and the same gains track to 3.95 deg.
-
-    ImplicitActuatorCfg is a PD. Anyone driving a trajectory through this
-    generated config inherits the problem, so the file has to say so.
-    """
-    assert "8.06" in source, "the gravity figure over the plan belongs in the file"
-    assert "does not compensate gravity" in source
-    assert "3.95 deg" in source, "and the number showing the feedforward fixes it"
+    """ImplicitActuatorCfg is a PD. The real controller adds gravity
+    compensation, and with gains this soft the arm sags without it: measured in
+    sim, 8.4 deg without and 0.03 deg with."""
+    assert "does not" in source and "gravity compensation" in source
+    assert "10.60 N.m" in source
 
 
 def test_arm_can_be_omitted(scene):

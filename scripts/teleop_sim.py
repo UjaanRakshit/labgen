@@ -134,6 +134,7 @@ class ArmInstance:
         self.lo, self.hi = lower[:N_ARM], upper[:N_ARM]
         self.masses = np.asarray(builder_arm.body_mass, float)
         self.axes = np.asarray(builder_arm.joint_axis, float)
+        self.coms = np.asarray(builder_arm.body_com, float)
         self.base = np.asarray(spec.base_position_m, float)
         self.workspace = Workspace(
             lower_m=tuple(self.base + np.asarray(REACH_BOX_LOCAL[0])),
@@ -373,7 +374,8 @@ def main() -> int:
             for inst in arms:
                 bw = inst.fk._eval(inst.q_cmd)
                 ff[inst.dofs.start: inst.dofs.start + N_ARM] = -gravity_torques(
-                    bw, inst.masses, inst.axes, offset=inst.body_offset,
+                    bw, inst.masses, inst.axes, coms=inst.coms,
+                    offset=inst.body_offset,
                     n_arm=N_ARM)
             control.joint_f.assign(ff.astype(np.float32))
             grav_ms += (time.perf_counter() - t_g) * 1000

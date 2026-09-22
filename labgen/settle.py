@@ -65,9 +65,46 @@ SETTLE_TOLERANCE_M = 0.002
 #                                  beaker -0.01, test tube 0.00,
 #                                  erlenmeyer -0.01, cylinder -0.00
 #
-# 160 kN/m is also the physically honest direction: glass on a steel benchtop is
-# far stiffer than the 2500 N/m the importer defaults to, so this is less
-# fudge than the default was.
+# WHY these values -- corrected. An earlier version of this comment justified
+# ke=160000 as "glass on a steel benchtop is far stiffer than 2500 N/m". That
+# was wrong, and it was a justification written after the numbers went green.
+# ke is not a stiffness in N/m on this solver. Newton hands both values to
+# MuJoCo through convert_solref(ke, kd, 1, 1):
+#
+#     timeconst = 2 / kd                 dampratio = kd / (2 * sqrt(ke))
+#
+# so the two constants below are really a constraint time constant of 2.5 ms
+# and a damping ratio of exactly 1.0. The importer default (ke=2500, kd=100)
+# was ALSO critically damped -- 100 = 2*sqrt(2500) -- so the thing that
+# actually changed was the time constant, 20 ms -> 2.5 ms.
+#
+# Measured across timeconst at fixed critical damping and dt=1/1920
+# (scripts/probe_solref.py):
+#
+#     timeconst   petri sink   beaker sink    sink / (g * tc^2)
+#       20 ms      10.57 mm      1.565 mm      petri 2.69  beaker 0.40
+#       10 ms       2.57         0.403               2.62         0.41
+#        5 ms       0.61         0.086               2.49         0.35
+#      2.5 ms       0.14         0.021               2.32         0.35
+#
+# Sink scales as timeconst squared -- the ratio column is roughly flat per
+# vessel -- so the mechanism is the constraint time constant, and an 8x
+# shorter one buys ~70x less sink. What did NOT hold is the tidy law
+# delta = g * tc^2: the prefactor differs ~7x between vessels, set by contact
+# geometry, so a new object's sink cannot be predicted from first principles
+# to better than an order of magnitude. The gate stays an empirical
+# measurement, not a derivation.
+#
+# Two constraints bound the choice. MuJoCo resolves a constraint only when
+# timeconst >= 2*dt: at 2.5 ms, dt=1/240 (0.6x) sinks 0.57 mm and 1/480 (1.2x)
+# 0.21 mm, against 0.09 mm at 1/960 (2.4x). And damping ratio is not neutral --
+# at fixed 2.5 ms, dampratio 2.0 / 1.0 / 0.5 sinks 0.54 / 0.14 / 0.03 mm -- so
+# ke does matter, through dampratio rather than as a stiffness. Critical is
+# kept because underdamped contact rings.
+#
+# For sim-to-real: real glass on a real bench has essentially zero resting
+# penetration, so every millimetre here is numerical. Shorter timeconst means
+# less of it, at the cost of a smaller dt.
 #
 # Verified not to have bought a green gate with a broken vessel
 # (scripts/probe_petri_cavity.py): a tube dropped into the petri dish now rests
@@ -76,7 +113,7 @@ SETTLE_TOLERANCE_M = 0.002
 # convex_decomposition also takes this gate to 0.01 mm, by sealing the dish.
 SETTLE_DT = 1.0 / 960.0
 CONTACT_KE = 160_000.0
-CONTACT_KD = 800.0          # ~2*sqrt(ke), near critical for these masses
+CONTACT_KD = 800.0          # timeconst 2/kd = 2.5 ms; kd = 2*sqrt(ke) -> dampratio 1.0
 
 
 class BackendUnavailable(RuntimeError):
