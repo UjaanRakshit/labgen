@@ -237,3 +237,30 @@ def use_pad_colliders(builder, pad, n_tips: int = 2, verbose: bool = True):
               f"{added} box(es) {pad.width_m*1000:.1f} x {pad.length_m*1000:.1f} "
               f"x {pad.thickness_m*1000:.1f} mm{flag}")
     return disabled, added
+
+
+def set_state(model, state, joint_q) -> None:
+    """Put a simulation state at `joint_q`, at rest. Use this, not eval_fk alone.
+
+    newton.eval_fk(model, joint_q, joint_qd, state) writes the state's BODY
+    poses from joint_q, and nothing else. It does NOT write state.joint_q. But
+    SolverMuJoCo integrates from state.joint_q, so a state initialised with
+    eval_fk alone starts from whatever joint_q it was created with -- which is
+    model.joint_q at the moment model.state() was called, usually the default
+    (all zeros: j2 and j3 on their lower limits, the arm folded at the base).
+    The solver then snaps the bodies back to those joints on the first step and
+    the arm swings toward its target.
+
+    That was measured in the teleop sim as a 277.7 mm gap between the commanded
+    ready pose and the physical hand on the very first tick, closing over
+    ~0.6 s. It also silently contaminated every probe that created its states
+    before setting the pose; one of them "held to 0.1 mm" only because an IK
+    solve had left model.joint_q near the answer as a side effect.
+    """
+    import newton as _newton
+
+    q = np.asarray(joint_q, dtype=np.float32)
+    state.joint_q.assign(q)
+    state.joint_qd.zero_()
+    model.joint_q.assign(q)
+    _newton.eval_fk(model, state.joint_q, state.joint_qd, state)

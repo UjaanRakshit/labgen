@@ -29,7 +29,7 @@ import newton
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from arm_drive import (configure_drives, configure_real_drives,          # noqa: E402
                        gravity_torques)
-from grasp import GraspFK, N_ARM, with_fingers                           # noqa: E402
+from grasp import set_state, GraspFK, N_ARM, with_fingers                           # noqa: E402
 sys.path.insert(0, "/mnt/c/Ujaan Docx/Research/labgen")
 from labgen.control import YAM_JAWS                                      # noqa: E402
 from labgen.hardware import YAM_V1                                        # noqa: E402
@@ -59,21 +59,25 @@ def build(real: bool):
     return model, arm, dofs, slice(0, model.joint_coord_count)
 
 
-def run(real: bool, target: np.ndarray, seconds: float, ff: bool = True):
+def run(real: bool, target: np.ndarray, seconds: float, ff: bool = True,
+        origin_lever_arms: bool = False):
     model, arm, dofs, coords = build(real)
     fk = GraspFK(model, coords)
     masses = np.asarray(arm.body_mass, float)
     axes = np.asarray(arm.joint_axis, float)
     coms = np.asarray(arm.body_com, float)
+    if origin_lever_arms:
+        # coms = 0 puts every body's weight at its frame origin: exactly
+        # the bug gravity_torques used to have.
+        coms = np.zeros_like(coms)
     off = model.body_count - len(masses)
 
     s0, s1 = model.state(), model.state()
     control = model.control()
     q0 = model.joint_q.numpy().copy()
     q0[coords] = with_fingers(READY, YAM_JAWS.q_closed)
-    model.joint_q.assign(q0.astype(np.float32))
-    newton.eval_fk(model, model.joint_q, model.joint_qd, s0)
-    newton.eval_fk(model, model.joint_q, model.joint_qd, s1)
+    set_state(model, s0, q0)
+    set_state(model, s1, q0)
 
     tq = control.joint_target_q.numpy().copy()
     tq[coords] = with_fingers(target, YAM_JAWS.q_closed)
@@ -126,6 +130,14 @@ def main() -> int:
             err = np.degrees(np.abs(tr[-1] - READY))
             print(f"{label:22} {str(ff):>12} {err.max():15.3f} deg   "
                   + " ".join(f"{e:6.2f}" for e in err))
+
+    print()
+    print("CENTRE OF MASS vs FRAME ORIGIN as the gravity lever arm (real gains, 3 s hold)")
+    for origin, label in ((True, "frame origin (the old bug)"), (False, "centre of mass (fixed)")):
+        tr = run(True, READY, 3.0, ff=True, origin_lever_arms=origin)
+        err = np.degrees(np.abs(tr[-1] - READY))
+        print(f"   {label:28} worst {err.max():7.3f} deg   "
+              + " ".join(f"{e:6.2f}" for e in err))
 
     print()
     print("STEP: +0.20 rad on one joint from the reset pose, 2 s, feedforward on")

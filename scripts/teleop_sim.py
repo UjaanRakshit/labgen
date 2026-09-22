@@ -41,13 +41,13 @@ import newton
 from newton.viewer import ViewerGL
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from arm_drive import (YAM_RATED_EFFORT_NM, configure_drives,             # noqa: E402
-                       gravity_torques)
-from grasp import GraspFK, N_ARM, use_pad_colliders, with_fingers         # noqa: E402
+from arm_drive import configure_real_drives, gravity_torques            # noqa: E402
+from grasp import set_state, GraspFK, N_ARM, use_pad_colliders, with_fingers         # noqa: E402
 
 sys.path.insert(0, "/mnt/c/Ujaan Docx/Research/labgen")
 from labgen.control import (YAM_JAWS, YAM_PAD, ArmSpec, BimanualRig,      # noqa: E402
                             solve_pose, yam_arm_spec)
+from labgen.hardware import YAM_V1                                         # noqa: E402
 from labgen.devices import (DEFAULT_PORT, RelativeRetargeter,             # noqa: E402
                             TcpPoseSource, Workspace)
 
@@ -78,6 +78,9 @@ CONTROL_HZ = 60.0
 # it.
 NCONMAX = 512
 NJMAX = 2048
+
+import os as _os
+DEBUG_LAG = _os.environ.get("LABGEN_DEBUG_LAG", "") not in ("", "0")
 
 DOWN = np.array([0.0, 0.0, -1.0])
 LOOK_AT = np.array([0.22, 0.30, 0.10])
@@ -148,6 +151,10 @@ class ArmInstance:
         self.ik_ms = 0.0
         self.solves = 0
         self.track_m = 0.0
+        self.target_m = None      # last commanded hand position
+        self.phys_m = 0.0         # physical lag, summed
+        self.phys_peak_m = 0.0
+        self.phys_n = 0
 
 
 def build(scene_usda: Path, urdf: Path, rig: BimanualRig, collide: bool = True):
@@ -181,8 +188,13 @@ def build(scene_usda: Path, urdf: Path, rig: BimanualRig, collide: bool = True):
         # position control at all and simply fall over. It fails quietly
         # because clamping a slice is not an error.
         builder.add_builder(arm)
-        configure_drives(builder, dof_slice=dofs, n_fingers=2,
-                         effort=YAM_RATED_EFFORT_NM, verbose=False)
+        # The REAL robot's per-joint actuators (labgen.hardware.YAM_V1, from the
+        # i2rt 1.1.2 config the rig runs): kp 80/10, kd 5/1.5, peak 28/10 N.m,
+        # Coulomb friction 0.3/0.06 N.m. Replaces kp=3000 on every joint, which
+        # was chosen to make the arm hold still and hid a broken gravity
+        # feedforward the whole time it was in use.
+        configure_real_drives(builder, YAM_V1, dof_slice=dofs, n_fingers=2,
+                              verbose=(i == 0))
         instances.append(ArmInstance(spec, arm, dofs, coords, lower, upper))
 
     model = builder.finalize()
@@ -290,9 +302,8 @@ def main() -> int:
         print(f"   {inst.name}: base {tuple(np.round(inst.base, 3))} "
               f"ready {np.round(reached, 3)}  {seed}")
 
-    model.joint_q.assign(q_all.astype(np.float32))
-    newton.eval_fk(model, model.joint_q, model.joint_qd, s0)
-    newton.eval_fk(model, model.joint_q, model.joint_qd, s1)
+    set_state(model, s0, q_all)
+    set_state(model, s1, q_all)
 
     frame_sock = None
     if args.stream:
@@ -361,6 +372,7 @@ def main() -> int:
                         inst.ik_fail += 1
                     reached, _ = inst.fk.pose(inst.q_cmd)
                     inst.track_m += float(np.linalg.norm(reached - target.position_m))
+                    inst.target_m = np.asarray(target.position_m, float).copy()
                     gap = (1.0 - float(np.clip(latest.grip, 0.0, 1.0))) \
                         * YAM_JAWS.max_gap_m
                     targets[inst.coords] = with_fingers(inst.q_cmd,
@@ -387,9 +399,28 @@ def main() -> int:
                 s0, s1 = s1, s0
             phys_ms += (time.perf_counter() - t_p) * 1000
 
-            if not np.isfinite(s0.body_q.numpy()).all():
+            bq = s0.body_q.numpy()
+            if not np.isfinite(bq).all():
                 print("diverged -- stopping")
                 return 1
+
+            # PHYSICAL tracking: where the simulated hand actually is, against
+            # where it was told to go. The IK figure above only says the solver
+            # found a configuration; with the real robot's soft gains the arm
+            # lags that configuration, and the lag is what an operator feels and
+            # what sim-to-real has to match.
+            for inst in arms:
+                if inst.target_m is not None:
+                    lag = float(np.linalg.norm(
+                        inst.fk.grasp_point_from_state(bq) - inst.target_m))
+                    inst.phys_m += lag
+                    inst.phys_peak_m = max(inst.phys_peak_m, lag)
+                    inst.phys_n += 1
+                    if DEBUG_LAG and inst.phys_n <= 40:
+                        hand = inst.fk.grasp_point_from_state(bq)
+                        print(f"   [lag] tick {inst.phys_n:3d} lag {lag*1000:7.1f} mm  "
+                              f"target {np.round(inst.target_m, 3)}  "
+                              f"hand {np.round(hand, 3)}", flush=True)
 
             t_v = time.perf_counter()
             if viewer is not None:
@@ -419,9 +450,9 @@ def main() -> int:
             if now - last_report > 2.0:
                 n = max(frames - last_frames, 1)
                 per_arm = "  ".join(
-                    f"{a.name.replace('arm_', '')}: {a.ik_ms / max(a.solves, 1):4.1f}ms "
-                    f"{a.track_m / max(a.solves, 1) * 1000:4.2f}mm "
-                    f"{a.ik_fail}bad" for a in arms)
+                    f"{a.name.replace('arm_', '')}: ik {a.track_m / max(a.solves, 1) * 1000:4.2f}mm "
+                    f"phys {a.phys_m / max(a.phys_n, 1) * 1000:5.1f}mm "
+                    f"(pk {a.phys_peak_m * 1000:5.1f}) {a.ik_fail}bad" for a in arms)
                 print(f"   {n / (now - last_report):5.1f} Hz | physics "
                       f"{phys_ms / n:5.2f} | grav {grav_ms / n:4.2f} | view "
                       f"{view_ms / n:5.2f} ms | {per_arm}", flush=True)

@@ -16,7 +16,7 @@ import newton
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import teleop_sim as T                                                   # noqa: E402
 from arm_drive import gravity_torques                                    # noqa: E402
-from grasp import GraspFK, N_ARM, with_fingers                           # noqa: E402
+from grasp import set_state, GraspFK, N_ARM, with_fingers                           # noqa: E402
 sys.path.insert(0, "/mnt/c/Ujaan Docx/Research/labgen")
 from labgen.control import YAM_JAWS, solve_pose                          # noqa: E402
 
@@ -33,9 +33,8 @@ def run(dt, substeps, ff_sign, seconds=2.0):
     control = model.control()
     q_all = model.joint_q.numpy().copy()
     q_all[coords] = with_fingers(q_cmd, YAM_JAWS.q_open)
-    model.joint_q.assign(q_all.astype(np.float32))
-    newton.eval_fk(model, model.joint_q, model.joint_qd, s0)
-    newton.eval_fk(model, model.joint_q, model.joint_qd, s1)
+    set_state(model, s0, q_all)
+    set_state(model, s1, q_all)
 
     targets = control.joint_target_q.numpy().copy()
     targets[coords] = with_fingers(q_cmd, YAM_JAWS.q_open)
