@@ -14,3 +14,4 @@ assets/generated/
 .venv-usd/
 .venv-teleop/
 .venv-usd/
+.venv-vision/
