@@ -49,6 +49,10 @@ this pipeline feeds a system that will eventually produce trust numbers.
 | `validate.py`     | the geometric gates                               | T3 ✅ |
 | `settle.py`       | the settle test, behind a backend interface       | T3 ✅ |
 | `isaaclab_cfg.py` | `SceneSpec` → `InteractiveSceneCfg` (emitted as text) | T4 ✅ |
+| `control.py`      | scripted IK, jaws, finger pads, bimanual rig (pure numpy) | A ✅ |
+| `hardware.py`     | the real robot's per-joint actuators, from the rig's own i2rt | — |
+| `devices.py`      | pose-streaming devices → hand targets (phone, Quest)   | — |
+| `sim2real.py`     | protocol, log format and comparison for sim vs real    | — |
 | `register.py`     | reconstruction frame → robot base frame           | T5 |
 | `identify.py`     | video → `[ObjectObservation]` (VLM)               | T6 |
 | `fit.py`          | `ObjectObservation` → `SceneObject`               | T6 |
@@ -171,6 +175,58 @@ measured, not chosen:
 
 Rotations are emitted `(x, y, z, w)`. Isaac Lab 3.0 changed from the older
 wxyz; `SceneSpec` stores wxyz and they are reordered.
+
+## Sim-to-real
+
+The simulated arm is built to respond the way the real one does, and the claim is
+checkable rather than asserted.
+
+**Sourced from what the rig actually runs.** The lab's YAMs are driven from
+`pairlab/yam_teleop` with **i2rt 1.1.2**; the sim was first built on a newer 1.3.6
+clone. Between them the YAM URDF differs by 407 lines, including a redefined
+wrist frame, but world-frame forward kinematics of both agree to **0.002 mm**
+(`scripts/probe_model_versions.py`) — the arm is identical, only the gripper link
+frame was relabelled. So **exchange joint angles between sim and real, never
+end-effector poses.**
+
+**Real actuators** (`labgen.hardware.YAM_V1`, from i2rt 1.1.2's `yam_v1.yml` and
+motor driver): j1–3 DM4340 at 28 N·m peak, j4–6 DM4310 at 10 N·m, kp
+80/10, kd 5/1.5, Coulomb friction 0.3/0.06 N·m, plus the controller's gravity
+compensation. The sim previously used kp=3000 on every joint — chosen to make
+the arm hold still — which hid a broken gravity feedforward: it put each link's
+weight at its frame origin rather than its centre of mass (133 mm off for
+link2). With the real gains that surfaced as 2.38° of sag; fixed, 0.000°.
+
+**The harness.** One gentle protocol — 0.10 rad eased steps per joint from the
+rig's recorded reset pose, then a slow shoulder sine, at the teleop's 100 Hz — run
+on both sides and compared:
+
+```
+# in the lab venv (sim by default; the real arm needs two explicit flags)
+python scripts/sim2real_record.py --backend real --channel can0        --i-have-cleared-the-workspace --out real_can0.npz
+# in the Isaac Lab env
+python scripts/sim2real_newton.py yam.urdf --out newton_sim.npz
+python scripts/sim2real_compare.py real_can0.npz newton_sim.npz
+```
+
+What the Newton sim predicts the real arm will do (rise 10–90% / overshoot /
+settle 2%): j1 110 ms/5.4%/830 ms, j2 140 ms/9.6%/970 ms, j3 130 ms/1.8%/200 ms,
+j4 480 ms/0%/1490 ms, j5 450 ms/0%/1100 ms, j6 390 ms/0%/720 ms. **No real-arm log
+exists yet**, so these are predictions, not validated numbers.
+
+**i2rt's own sim is not a dynamics reference.** `SimRobot.command_joint_pos`
+teleports the joints ("CONTROL mode uses teleport") with physics off, so it
+tracks perfectly and instantly. The lab teleop's `backend: sim` runs exactly
+that, so nothing tested through it says anything about lag, overshoot or torque
+limits.
+
+**Contact grasp (item D).** The finger pads were first authored on the wrong
+surface — the bracket by the mount, not the fingertips — so the jaws closed on
+nothing. Re-measured fingertip-first in the world frame, the pad separation is
+the jaw gap + 3.9 mm across the whole stroke, and the grasp point is now the
+midpoint of the pads rather than the tip-mesh centroid (30 mm off). The pads and
+the pad friction are both **unverified**: calipers and a friction measurement
+replace them.
 
 ## Known gaps
 

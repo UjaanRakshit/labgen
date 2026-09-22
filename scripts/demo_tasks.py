@@ -59,6 +59,7 @@ import newton
 from newton.viewer import ViewerGL
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from grasp import set_state                                    # noqa: E402
 from arm_drive import (DEFAULT_KD, DEFAULT_KE, YAM_RATED_EFFORT_NM,      # noqa: E402
                        configure_drives, gravity_torques)
 from arm_ik import lerp_path                                             # noqa: E402
@@ -378,8 +379,8 @@ def main() -> int:
     q_all = model.joint_q.numpy().copy()
     q_all[coords] = pl.steps[0].cfg
     model.joint_q.assign(q_all.astype(np.float32))
-    newton.eval_fk(model, model.joint_q, model.joint_qd, s0)
-    newton.eval_fk(model, model.joint_q, model.joint_qd, s1)
+    set_state(model, s0, model.joint_q.numpy())
+    set_state(model, s1, model.joint_q.numpy())
 
     solver = newton.solvers.SolverMuJoCo(model, iterations=120, ls_iterations=60)
 

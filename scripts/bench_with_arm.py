@@ -22,6 +22,10 @@ from pathlib import Path
 import numpy as np
 
 import newton
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+from grasp import set_state                                    # noqa: E402
 from newton.viewer import ViewerGL
 
 WIDTH, HEIGHT = 1600, 900
@@ -96,8 +100,8 @@ def main() -> int:
     # Newton leaves body_q at identity otherwise, so the arm renders folded into
     # the origin and snaps into its real pose on step 1. That reads as an arm
     # collapsing under gravity; it is actually an uninitialised state.
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_1)
+    set_state(model, state_0, model.joint_q.numpy())
+    set_state(model, state_1, model.joint_q.numpy())
     # The default iteration budget warns "solver iterations limit reached" on
     # this scene; contact between an articulated arm and five free bodies needs
     # more than a bare bench does.

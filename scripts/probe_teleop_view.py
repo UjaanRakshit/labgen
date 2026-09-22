@@ -13,6 +13,7 @@ import newton
 from newton.viewer import ViewerGL
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from grasp import set_state                                    # noqa: E402
 import teleop_sim as T                                                   # noqa: E402
 
 URDF = "/home/ujaan/isaac/i2rt/i2rt/robot_models/arm/yam/v1/yam.urdf"
@@ -31,7 +32,7 @@ def main() -> int:
     q_all = model.joint_q.numpy().copy()
     q_all[coords] = with_fingers(seed.q, YAM_JAWS.q_open)
     model.joint_q.assign(q_all.astype(np.float32))
-    newton.eval_fk(model, model.joint_q, model.joint_qd, s0)
+    set_state(model, s0, model.joint_q.numpy())
 
     viewer = ViewerGL(width=960, height=540, headless=True, vsync=False)
     viewer.set_model(model)

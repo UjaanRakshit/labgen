@@ -25,6 +25,7 @@ import warp as wp
 import newton
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from grasp import set_state                                    # noqa: E402
 from arm_drive import configure_drives                                   # noqa: E402
 
 URDF = "/home/ujaan/isaac/i2rt/i2rt/robot_models/arm/yam/v1/yam.urdf"
@@ -46,8 +47,8 @@ def main() -> int:
     model.joint_q.assign(home)
     s0, s1 = model.state(), model.state()
     control = model.control()
-    newton.eval_fk(model, model.joint_q, model.joint_qd, s0)
-    newton.eval_fk(model, model.joint_q, model.joint_qd, s1)
+    set_state(model, s0, model.joint_q.numpy())
+    set_state(model, s1, model.joint_q.numpy())
 
     # A target the arm can reach and hold, well clear of home -- and INSIDE the
     # joint limits. The first version of this probe commanded joint 2 to

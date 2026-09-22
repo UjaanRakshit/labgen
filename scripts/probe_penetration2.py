@@ -14,6 +14,7 @@ import numpy as np
 import newton
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from grasp import set_state                                    # noqa: E402
 import teleop_sim as T                                                    # noqa: E402
 from grasp import GraspFK, N_ARM, quat_to_matrix, with_fingers            # noqa: E402
 sys.path.insert(0, "/mnt/c/Ujaan Docx/Research/labgen")
@@ -82,8 +83,8 @@ def main() -> int:
         q_all = model.joint_q.numpy().copy()
         q_all[coords] = with_fingers(res.q, YAM_JAWS.q_open)
         model.joint_q.assign(q_all.astype(np.float32))
-        newton.eval_fk(model, model.joint_q, model.joint_qd, s0)
-        newton.eval_fk(model, model.joint_q, model.joint_qd, s1)
+        set_state(model, s0, model.joint_q.numpy())
+        set_state(model, s1, model.joint_q.numpy())
         targets = control.joint_target_q.numpy().copy()
         targets[coords] = with_fingers(res.q, YAM_JAWS.q_open)
         control.joint_target_q.assign(targets)

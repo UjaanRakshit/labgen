@@ -83,8 +83,8 @@ import os as _os
 DEBUG_LAG = _os.environ.get("LABGEN_DEBUG_LAG", "") not in ("", "0")
 
 DOWN = np.array([0.0, 0.0, -1.0])
-LOOK_AT = np.array([0.22, 0.30, 0.10])
-EYE = LOOK_AT + np.array([0.55, -0.85, 0.65])
+LOOK_AT = np.array([0.05, 0.35, 0.12])
+EYE = LOOK_AT + np.array([1.05, 0.05, 0.70])
 
 # Warm-started IK: teleop moves the target a millimetre or two per tick, so the
 # previous configuration is an excellent seed. Iteration count from
@@ -98,10 +98,19 @@ IK_TOL_M = 0.002
 REACH_BOX_LOCAL = ((-0.42, 0.10, 0.02), (0.42, 0.52, 0.25))
 READY_LOCAL = np.array([0.20, 0.28, 0.22])
 
-PLACEHOLDER_OFFSET_M = (0.44, 0.0, 0.0)
+# The second arm FACES the first, across the bench. That orientation is
+# sourced, if weakly: the lab's own teleop config says "two arms facing each
+# other do not share one [reset pose]" (pairlab/yam_teleop/deployment/
+# config.yaml). An earlier placeholder had the arms side by side facing the
+# same way, which contradicts that. The DISTANCE is still unmeasured: 0.70 m
+# across puts the bench objects (y 0.28-0.42 m from the first arm) roughly
+# between the two bases. PLACEHOLDER, and the rig reports unverified.
+PLACEHOLDER_OFFSET_M = (0.0, 0.70, 0.0)
+PLACEHOLDER_YAW_WXYZ = (0.0, 0.0, 0.0, 1.0)      # 180 deg about z: facing arm_left
 PLACEHOLDER_SOURCE = (
-    "PLACEHOLDER 440 mm along +x, chosen so the bimanual stack can be built "
-    "and driven. NOT a measurement of the real rig."
+    "PLACEHOLDER 700 mm across the bench, facing the first arm. Facing: from "
+    "yam_teleop deployment/config.yaml ('two arms facing each other'). "
+    "Distance: NOT a measurement of the real rig."
 )
 
 
@@ -110,6 +119,7 @@ def default_rig(bimanual: bool, lower, upper) -> BimanualRig:
     if bimanual:
         arms.append(yam_arm_spec(lower, upper, name="arm_right",
                                  base_position_m=PLACEHOLDER_OFFSET_M,
+                                 base_orientation_wxyz=PLACEHOLDER_YAW_WXYZ,
                                  placement_source=PLACEHOLDER_SOURCE))
     return BimanualRig(arms)
 
@@ -139,10 +149,21 @@ class ArmInstance:
         self.axes = np.asarray(builder_arm.joint_axis, float)
         self.coms = np.asarray(builder_arm.body_com, float)
         self.base = np.asarray(spec.base_position_m, float)
-        self.workspace = Workspace(
-            lower_m=tuple(self.base + np.asarray(REACH_BOX_LOCAL[0])),
-            upper_m=tuple(self.base + np.asarray(REACH_BOX_LOCAL[1])))
-        self.ready = self.base + READY_LOCAL
+        # Reach box and ready pose are defined in the arm's OWN frame, so a
+        # rotated base must rotate them, not merely translate them -- otherwise
+        # an arm facing the other way is handed a workspace behind itself.
+        w, x, y, z = spec.base_orientation_wxyz
+        R = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+        corners = np.array([[a, b, c] for a in (REACH_BOX_LOCAL[0][0], REACH_BOX_LOCAL[1][0])
+                            for b in (REACH_BOX_LOCAL[0][1], REACH_BOX_LOCAL[1][1])
+                            for c in (REACH_BOX_LOCAL[0][2], REACH_BOX_LOCAL[1][2])])
+        world = corners @ R.T + self.base
+        self.workspace = Workspace(lower_m=tuple(world.min(axis=0)),
+                                   upper_m=tuple(world.max(axis=0)))
+        self.ready = self.base + R @ READY_LOCAL
         self.body_offset = 0
         self.fk = None
         self.q_cmd = None
