@@ -255,13 +255,31 @@ class FingerPad:
 
 # Derived from the mesh, NOT from calipers. Ujaan is measuring the real pads;
 # until those numbers arrive this is flagged unverified everywhere it is used.
+#
+# CORRECTED. The first version of this pad sat on the wrong surface entirely:
+# centre (3.2, -1.3, -6.1) mm, on the bracket near the finger mount. It was found
+# by taking the face nearest body-local y = 0 -- but body-local y = 0 says
+# nothing about where the OTHER finger is, and on an L-shaped finger the surface
+# nearest the other finger is the bracket, which moves OPPOSITE to the jaw. The
+# grasp acceptance test exposed it: the pads sat 18 mm above the beaker rim and
+# moved APART as the jaws closed (42.7 mm apart open, 63.7 mm closed), so the
+# jaws closed on nothing.
+#
+# Re-measured in the WORLD frame, fingertip first (scripts/probe_padbox_world.py):
+# restrict to the distal 20 mm of each finger along the approach axis, then take
+# the face nearest the other finger. That pad tracks the jaw exactly -- pad
+# centre separation is the jaw gap + 3.9 mm at every opening tested (90, 70, 50,
+# 30 mm), i.e. the inner faces sit exactly at the gap the jaw model predicts.
+# The 3.9 mm thickness is the face band the search used, not the finger's solid
+# depth; at grasp speeds (~0.05 mm per step at dt 1/960) it cannot tunnel.
 YAM_PAD = FingerPad(
-    width_m=0.0257,
-    length_m=0.0195,
-    thickness_m=0.0079,
-    centre_m=(0.0029, -0.0007, -0.0061),
-    source="derived from the i2rt yam.urdf fingertip mesh, "
-           "scripts/probe_padbox.py -- NOT caliper-verified",
+    width_m=0.0274,
+    length_m=0.0177,
+    thickness_m=0.0039,
+    centre_m=(0.02399, -0.04648, -0.08133),
+    source="measured in the world frame at the fingertip from the i2rt yam.urdf "
+           "tip mesh, scripts/probe_padbox_world.py; pad separation = jaw gap + "
+           "3.9 mm across the stroke -- NOT caliper-verified",
     verified=False,
 )
 

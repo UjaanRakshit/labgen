@@ -74,7 +74,8 @@ class GraspFK:
     n_joints = YAM_N_ARM          # satisfies labgen.control.Kinematics
 
     def __init__(self, model: newton.Model, coord_slice: slice,
-                 body_offset: int | None = None, n_bodies: int | None = None):
+                 body_offset: int | None = None, n_bodies: int | None = None,
+                 pad=None):
         """`body_offset`/`n_bodies` locate THIS arm's bodies in the model.
 
         Without them the tip bodies are taken as the last two in the whole
@@ -104,7 +105,17 @@ class GraspFK:
         # So: take each tip's collision mesh, push it through its shape
         # transform into body-local coordinates once, and keep the centroid.
         # Applying the body transform to that each call is cheap and exact.
-        self._tip_local = self._tip_centroids()
+        # With an authored pad, the grasp point is the midpoint of the two PAD
+        # centres -- where the jaws actually close. Without one it falls back to
+        # the tip-mesh centroids, which on this L-shaped finger sit ~30 mm from
+        # the jaw along the approach axis: the IK then puts the "hand" at the
+        # rim while the pads close 30 mm higher, on nothing.
+        if pad is not None:
+            a, b = sorted(self._tip_ids)
+            self._tip_local = [(a, np.asarray(pad.centre_for(1), float)),
+                               (b, np.asarray(pad.centre_for(-1), float))]
+        else:
+            self._tip_local = self._tip_centroids()
 
     def _tip_centroids(self) -> list[tuple[int, np.ndarray]]:
         model = self.model

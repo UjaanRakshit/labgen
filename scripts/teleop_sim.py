@@ -157,8 +157,18 @@ class ArmInstance:
         self.phys_n = 0
 
 
-def build(scene_usda: Path, urdf: Path, rig: BimanualRig, collide: bool = True):
-    """Scene plus one arm per rig entry, each at its own base transform."""
+def build(scene_usda: Path, urdf: Path, rig: BimanualRig, collide: bool = True,
+          contact: tuple[float, float] | None = None, finger_force_n: float | None = None):
+    """Scene plus one arm per rig entry, each at its own base transform.
+
+    `contact=(ke, kd)` overrides every shape's contact parameters. Teleop leaves
+    it None to stay real time at dt=1/120; anything whose numbers must be
+    physically faithful -- the grasp acceptance test -- passes labgen.settle's
+    (CONTACT_KE, CONTACT_KD) and runs at a dt that satisfies timeconst >= 2*dt.
+
+    `finger_force_n` sets the per-finger force limit, so a grip-force sweep can
+    rebuild with a different ceiling without editing the drive defaults.
+    """
     builder = newton.ModelBuilder()
     builder.add_usd(str(scene_usda))
 
@@ -196,6 +206,17 @@ def build(scene_usda: Path, urdf: Path, rig: BimanualRig, collide: bool = True):
         configure_real_drives(builder, YAM_V1, dof_slice=dofs, n_fingers=2,
                               verbose=(i == 0))
         instances.append(ArmInstance(spec, arm, dofs, coords, lower, upper))
+
+    if contact is not None:
+        ke, kd = contact
+        for i in range(builder.shape_count):
+            builder.shape_material_ke[i] = ke
+            builder.shape_material_kd[i] = kd
+    if finger_force_n is not None:
+        for inst in instances:
+            start, stop, _ = inst.dofs.indices(builder.joint_dof_count)
+            for d in range(stop - 2, stop):
+                builder.joint_effort_limit[d] = finger_force_n
 
     model = builder.finalize()
     # Arms were appended in order, so each owns a contiguous run of bodies at
@@ -287,7 +308,7 @@ def main() -> int:
     for inst in arms:
         inst.fk = GraspFK(model, inst.coords,
                           body_offset=inst.body_offset,
-                          n_bodies=len(inst.masses))
+                          n_bodies=len(inst.masses), pad=YAM_PAD)
         seed = solve_pose(inst.fk, inst.ready, inst.lo, inst.hi, approach=DOWN)
         if not seed.ok:
             print(f"{inst.name}: cannot reach its ready pose {inst.ready}: {seed}")
