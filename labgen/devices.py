@@ -103,6 +103,12 @@ class PoseEvent:
     t_s: float = 0.0
     device: str = "phone"
     hand: str = "right"
+    # Episode control ("save" / "discard"). Sent on EVERY sample with a counter
+    # that increments per press, because the sim polls only the newest sample:
+    # a one-shot command packet would be overwritten by the next pose and lost.
+    # The consumer acts when `command_seq` changes, not when `command` is set.
+    command: str = ""
+    command_seq: int = 0
 
     @property
     def position(self) -> np.ndarray:
@@ -147,6 +153,8 @@ class PoseEvent:
             t_s=float(payload.get("t", 0.0)),
             device=str(payload.get("device", "phone")),
             hand=str(payload.get("hand", "right")),
+            command=str(payload.get("cmd", "")),
+            command_seq=int(payload.get("cmd_seq", 0)),
         )
 
 

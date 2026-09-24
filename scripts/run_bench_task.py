@@ -19,6 +19,13 @@ from isaaclab.app import add_launcher_args, launch_simulation  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--no-pick", action="store_true")
+parser.add_argument("--iters", type=int, default=0, help="override solver iterations")
+parser.add_argument("--ls-iters", type=int, default=0)
+parser.add_argument("--substeps", type=int, default=0)
+parser.add_argument("--kd", type=float, default=0.0, help="contact kd; ke = (kd/2)^2")
+parser.add_argument("--coll-dec", type=int, default=-1)
+parser.add_argument("--dt", type=float, default=0.0)
+parser.add_argument("--decimation", type=int, default=0)
 add_launcher_args(parser)
 args = parser.parse_args()
 
@@ -43,6 +50,25 @@ def quat_wxyz_to_R(q):
 
 def main() -> int:
     cfg = BenchYamIkRelEnvCfg()
+    if args.iters:
+        cfg.sim.physics.solver_cfg.iterations = args.iters
+    if args.ls_iters:
+        cfg.sim.physics.solver_cfg.ls_iterations = args.ls_iters
+    if args.dt:
+        cfg.sim.dt = args.dt
+    if args.decimation:
+        cfg.decimation = args.decimation
+    if args.substeps:
+        cfg.sim.physics.num_substeps = args.substeps
+    if args.kd:
+        cfg.sim.physics.default_shape_cfg.kd = args.kd
+        cfg.sim.physics.default_shape_cfg.ke = (args.kd / 2) ** 2
+    if args.coll_dec >= 0:
+        cfg.sim.physics.collision_decimation = args.coll_dec
+    p = cfg.sim.physics
+    print(f"PHYSICS substeps {p.num_substeps} (substep {cfg.sim.dt/p.num_substeps*1000:.2f} ms) "
+          f"ke {p.default_shape_cfg.ke:.0f} kd {p.default_shape_cfg.kd:.0f} "
+          f"collision_decimation {p.collision_decimation}")
     with launch_simulation(cfg, args):
         env = gym.make(TASK, cfg=cfg)
         u = env.unwrapped
@@ -67,9 +93,13 @@ def main() -> int:
         eef0 = [pol["robot0_eef_pos"][0].clone(), pol["robot1_eef_pos"][0].clone()]
         print(f"robot1 base quat (wxyz) {pol['robot1_base_ori'][0].tolist()}  "
               f"-- expect ~(0,0,0,1) for the 180 deg yaw")
+        import time
+        t0 = time.perf_counter()
         for _ in range(2 * steps_per_s):
             obs, *_ = env.step(act())
             pol = obs["policy"]
+        per = (time.perf_counter() - t0) / (2 * steps_per_s) * 1000
+        print(f"STEP TIME {per:.1f} ms per env step (real time needs <= {1000/steps_per_s:.0f})")
         print("SETTLE (2 s, zero action):")
         worst = 0.0
         for n in OBJECTS:

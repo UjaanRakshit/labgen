@@ -303,3 +303,16 @@ def test_devices_import_without_a_physics_engine_or_a_web_stack():
     assert out.returncode == 0, out.stderr
     leaked = [m for m in out.stdout.strip().split(",") if m]
     assert not leaked, f"importing the device layer dragged in {leaked}"
+
+
+def test_episode_commands_ride_every_sample_with_a_counter():
+    """The sim reads only the newest sample, so a one-shot SAVE packet would be
+    overwritten by the next pose. The command persists; the counter says when
+    a new press happened."""
+    e = PoseEvent.from_json(good_payload(cmd="save", cmd_seq=3))
+    assert e.command == "save" and e.command_seq == 3
+
+
+def test_no_command_fields_means_no_command():
+    e = PoseEvent.from_json(good_payload())
+    assert e.command == "" and e.command_seq == 0

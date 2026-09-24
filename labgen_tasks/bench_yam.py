@@ -298,12 +298,18 @@ class BenchYamIkRelEnvCfg(ManagerBasedRLEnvCfg):
         # grasp acceptance passed on -- not Newton's default ke=2500, under which
         # a 25 N grip sinks ~10 mm into a 2 mm glass wall and the jaws closed
         # straight through the beaker. MuJoCo needs timeconst (2/kd = 2.5 ms)
-        # >= 2 x the substep, so 5 ms physics x 4 substeps = 1.25 ms.
-        # Decimation 10 -> 20 Hz control, COBALT's YAM control rate.
-        self.decimation = 10
+        # >= 2 x the substep: 25 ms physics steps x 20 substeps = 1.25 ms.
+        #
+        # Why 25 ms x 20 and not 5 ms x 4 (the same substep): the cost is per
+        # PHYSICS step, not per substep -- relative IK re-solves both arms every
+        # physics step. Measured per 20 Hz control step, pick test passing in
+        # every case: 5 ms x 4 -> 74 ms, 10 ms x 8 -> 51 ms, 25 ms x 20 -> 38 ms.
+        # Solver iterations (100 -> 8) and collision decimation changed nothing.
+        # Decimation 2 -> 20 Hz control, COBALT's YAM control rate.
+        self.decimation = 2
         self.episode_length_s = 60.0
-        self.sim.dt = 0.005
-        self.sim.render_interval = 4
+        self.sim.dt = 0.025
+        self.sim.render_interval = 2
         # Otherwise Isaac Lab's stack task Newton preset, verbatim except the
         # constraint budget, which two arms and four objects need more of.
         self.sim.physics = NewtonCfg(
@@ -319,7 +325,7 @@ class BenchYamIkRelEnvCfg(ManagerBasedRLEnvCfg):
             # all of them. mu stays Newton's 1.0 for the robot's pads (UNVERIFIED,
             # as in the grasp acceptance); objects carry their catalog friction.
             default_shape_cfg=NewtonShapeCfg(ke=CONTACT_KE, kd=CONTACT_KD),
-            num_substeps=4,
+            num_substeps=20,
             debug_mode=False,
         )
         self.viewer.eye = (1.2, -0.6, 0.9)

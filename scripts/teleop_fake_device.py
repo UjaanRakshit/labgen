@@ -19,6 +19,8 @@ Patterns:
     clutch   moves, releases, jumps far away, re-engages -- the hand must NOT
              jump, which is the single most important behaviour to get right
     dropout  injects a 3 m teleport, which must be rejected rather than obeyed
+    episode  engage, descend 6 cm, close, lift, release, SAVE; then circle and
+             DISCARD -- exercises the recorder's save and discard paths
 """
 
 from __future__ import annotations
@@ -61,6 +63,26 @@ def frames(pattern: str, hz: float):
             else:
                 u = (phase - 7.0) / 5.0 * 0.04
                 yield (-0.50 + u, 0.30, 0.0), True, 0.0     # re-engaged
+        elif pattern == "episode":
+            # (pos, engaged, grip, cmd, cmd_seq): the command persists with a
+            # counter, exactly as the touch page sends it.
+            if t < 1.0:
+                yield (0.0, 0.0, 0.0), False, 0.0, "", 0
+            elif t < 4.0:
+                yield (0.0, 0.0, -0.06 * (t - 1.0) / 3.0), True, 0.0, "", 0
+            elif t < 5.0:
+                yield (0.0, 0.0, -0.06), True, 1.0, "", 0
+            elif t < 8.0:
+                yield (0.0, 0.0, -0.06 + 0.06 * (t - 5.0) / 3.0), True, 1.0, "", 0
+            elif t < 9.0:
+                yield (0.0, 0.0, 0.0), False, 1.0, "", 0
+            elif t < 10.0:
+                yield (0.0, 0.0, 0.0), False, 0.0, "save", 1
+            elif t < 14.0:
+                a = 2.0 * math.pi * ((t - 10.0) / 4.0)
+                yield (0.03 * math.cos(a), 0.03 * math.sin(a), 0.0), True, 0.0, "save", 1
+            else:
+                yield (0.0, 0.0, 0.0), False, 0.0, "discard", 2
         elif pattern == "dropout":
             if 3.0 < t < 3.05:
                 yield (3.0, 0.0, 0.0), True, 0.0            # teleport
@@ -74,7 +96,8 @@ def frames(pattern: str, hz: float):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pattern", default="circle",
-                    choices=("circle", "square", "clutch", "dropout"))
+                    choices=("circle", "square", "clutch", "dropout", "episode"))
+    ap.add_argument("--hand", default="right")
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--hz", type=float, default=60.0)
     ap.add_argument("--seconds", type=float, default=0.0,
@@ -97,14 +120,17 @@ def main() -> int:
     started = time.time()
     try:
         while True:
-            (x, y, z), engaged, grip = next(gen)
+            sample = next(gen)
+            (x, y, z), engaged, grip = sample[:3]
+            cmd, cmd_seq = sample[3:] if len(sample) > 3 else ("", 0)
             seq += 1
             line = json.dumps({
                 "position": {"x": x, "y": y, "z": z},
                 "orientation": quat_identity(),
                 "move": engaged, "gripper": grip, "scale": 1.0,
                 "seq": seq, "t": time.time(),
-                "device": "fake", "hand": "right",
+                "device": "fake", "hand": args.hand,
+                "cmd": cmd, "cmd_seq": cmd_seq,
             }) + "\n"
             conn.sendall(line.encode("utf-8"))
             if args.seconds and time.time() - started > args.seconds:

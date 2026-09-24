@@ -100,6 +100,10 @@ PAGE = """<!doctype html>
   </div>
   <div class="row"><input id="grip" type="range" min="0" max="100" value="0"></div>
   <div class="row"><button id="go" class="btn">ENGAGE</button></div>
+  <div class="row">
+    <button id="save" class="btn sm">SAVE DEMO</button>
+    <button id="discard" class="btn sm">DISCARD</button>
+  </div>
 </div>
 <script>
 const pad=document.getElementById('pad'), zs=document.getElementById('zstrip');
@@ -129,6 +133,9 @@ function setHand(h){
 // guard. Accumulating deltas means you can stroke repeatedly to travel further
 // than the pad is wide, exactly like a mouse on a small desk.
 let X=0, Y=0, Z=0, engaged=false, sent=0, fails=0;
+// Episode control. Sent on every sample with a counter, so the sim -- which
+// only reads the newest sample -- cannot miss a press. It acts on a change.
+let cmd='', cmdSeq=0;
 const MM_PER_PX = 0.6;           // a 300 px stroke moves the hand 180 mm
 
 function dragger(el, apply){
@@ -158,6 +165,9 @@ go.addEventListener('click',()=>setEngaged(!engaged));
 armL.addEventListener('click',()=>setHand('left'));
 armR.addEventListener('click',()=>setHand('right'));
 rec.addEventListener('click',()=>{ X=Y=Z=0; });
+function episode(c){ cmd=c; cmdSeq++; X=Y=Z=0; setEngaged(false); }
+document.getElementById('save').addEventListener('click',()=>episode('save'));
+document.getElementById('discard').addEventListener('click',()=>episode('discard'));
 // Still auto-stops if the page goes away: an arm that keeps moving because the
 // phone locked is the worst failure available.
 document.addEventListener('visibilitychange',()=>{ if(document.hidden) setEngaged(false); });
@@ -168,7 +178,7 @@ async function tick(){
   const body=JSON.stringify({
     position:{x:X, y:Y, z:Z}, orientation:{w:1,x:0,y:0,z:0},
     move:engaged, gripper:(+grip.value)/100.0, scale:1.0,
-    seq:++sent, hand:hand });
+    seq:++sent, hand:hand, cmd:cmd, cmd_seq:cmdSeq });
   try{ await fetch('/pose',{method:'POST',body,
        headers:{'Content-Type':'application/json'},keepalive:true}); }
   catch(err){ fails++; }
