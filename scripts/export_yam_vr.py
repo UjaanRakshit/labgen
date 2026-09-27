@@ -8,7 +8,7 @@ exporter turns real and sim data into one dataset format with no second code
 path:
 
     python export_yam_vr.py demos/vial_gen.hdf5 out/yam_vr/          # this script
-    cd ~/yam_vr_teleop && .venv/bin/python -m deployment.export_demos \\
+    cd $TELEOP        && .venv/bin/python -m deployment.export_demos \\
         ~/labgen/out/yam_vr/ --lerobot out/sim_dataset                  # theirs
 
 DO NOT pass --fps above the sim's rate (20 Hz). Their exporter only resamples

@@ -2,7 +2,7 @@
 
 Run this in the lab's teleop venv, the one that drives the real rig:
 
-    cd ~/yam_vr_teleop                     # the lab's arm-driving repo and venv
+    cd $TELEOP                            # the lab's arm-driving repo and venv
     .venv/bin/python ~/labgen/scripts/sim2real_record.py --out i2rt_sim.npz      # i2rt's own sim
     .venv/bin/python ~/labgen/scripts/sim2real_record.py --backend real \
         --teleop-config deployment/config.yaml \

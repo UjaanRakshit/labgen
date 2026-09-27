@@ -31,24 +31,53 @@ adapter's USB serial against the teleop config, and refuses otherwise. Motion is
 and holds if any joint exceeds 3 rad/s.
 
 ```bash
-git clone https://github.com/UjaanRakshit/labgen ~/labgen
-cd ~/yam_vr_teleop
-.venv/bin/pip show i2rt | head -2          # report this: the sim's gains come from i2rt 1.1.2
-.venv/bin/python -m deployment.preflight --config deployment/config.yaml \
-    --second-config deployment/config_left.yaml            # nothing energizes
-.venv/bin/python ~/labgen/scripts/sim2real_record.py --out ~/i2rt_sim.npz   # dry run, i2rt's sim
-.venv/bin/python ~/labgen/scripts/sim2real_record.py --backend real \
-    --teleop-config deployment/config.yaml --i-have-cleared-the-workspace --out ~/real_right.npz
-.venv/bin/python ~/labgen/scripts/sim2real_record.py --backend real \
-    --teleop-config deployment/config_left.yaml --i-have-cleared-the-workspace --out ~/real_left.npz
+git clone https://github.com/UjaanRakshit/labgen ~/labgen || git -C ~/labgen pull
+DAY=~/labgen/data/lab/$(date +%F); mkdir -p "$DAY"; cp -n ~/labgen/data/lab/TEMPLATE.md "$DAY/README.md"
+# the lab teleop checkout -- its AGENTS.md says /home/nico/yam_teleop; find it rather than assume
+TELEOP=$(dirname "$(dirname "$(find ~ -maxdepth 4 -path '*/deployment/quest_teleop.py' 2>/dev/null | head -1)")")
+cd "$TELEOP" && echo "teleop checkout: $TELEOP"
+.venv/bin/pip show i2rt | tee "$DAY/i2rt_version.txt"      # the sim's gains come from i2rt 1.1.2
+.venv/bin/python -m deployment.preflight --config deployment/config.yaml     --second-config deployment/config_left.yaml | tee "$DAY/preflight.txt"      # nothing energizes
+.venv/bin/python ~/labgen/scripts/sim2real_record.py --out "$DAY/i2rt_sim.npz" | tee "$DAY/dry_run.txt"
+# ONLY after the owner confirms: person at the e-stop, workspace clear, teleop stopped
+.venv/bin/python ~/labgen/scripts/sim2real_record.py --backend real --teleop-config deployment/config.yaml     --i-have-cleared-the-workspace --out "$DAY/real_right.npz" | tee "$DAY/real_right.txt"
+.venv/bin/python ~/labgen/scripts/sim2real_record.py --backend real --teleop-config deployment/config_left.yaml     --i-have-cleared-the-workspace --out "$DAY/real_left.npz" | tee "$DAY/real_left.txt"
 ```
 
-Each real run is ~25 s. Bring back both `.npz` files and the i2rt version. The
-comparison runs anywhere with numpy:
+Each real run is ~25 s. Then compare each against the sim's prediction (needs
+only numpy; the teleop venv has it). It exits 1 when they disagree -- expected,
+nothing has been tuned against a real log yet; the numbers are the point:
 
 ```bash
-python scripts/sim2real_compare.py ~/real_right.npz data/sim2real/newton_prediction.npz
+for arm in right left; do
+  .venv/bin/python ~/labgen/scripts/sim2real_compare.py "$DAY/real_$arm.npz"       ~/labgen/data/sim2real/newton_prediction.npz | tee "$DAY/compare_$arm.txt"
+done
 ```
+
+### Lab session checklist
+
+In priority order. Record every result in `data/lab/<YYYY-MM-DD>/`, starting
+from `data/lab/TEMPLATE.md` (copy it to `data/lab/<date>/README.md`), then hand
+it back:
+
+```bash
+git checkout -b lab/<YYYY-MM-DD>
+git add data/lab/<YYYY-MM-DD> && git commit -m "Lab results <date>" && git push -u origin lab/<YYYY-MM-DD>
+```
+
+If the machine cannot push, copy the folder to a USB stick instead. Do not
+merge to `main`.
+
+1. **i2rt version** on the arm laptop (`pip show i2rt` in the teleop venv).
+2. **Real-arm recordings and their comparison** (section 1 writes everything,
+   console output included, into `$DAY`). Summarise in the folder's README
+   whether each run completed and anything that looked wrong.
+3. **Measurements**, with calipers and a tape: the fields in `TEMPLATE.md`
+   (finger pads, which gripper, second arm's base offset and heading). Write
+   down the tool and how each was measured. Do NOT edit `labgen/control.py`
+   or `labgen/hardware.py`; the numbers are reviewed before they go in.
+4. **Vial demos** on the phone (section 2), if a sim machine is there: five or
+   more that complete the task; copy `demos/vial_real.hdf5` into the folder.
 
 ### 2. The sim (Isaac Lab machine)
 
@@ -101,7 +130,7 @@ Expect roughly half the attempts to succeed; only successes are written.
 
 ```bash
 python scripts/export_yam_vr.py demos/vial_gen.hdf5 out/yam_vr/
-cd ~/yam_vr_teleop && .venv/bin/python -m deployment.export_demos ~/labgen/out/yam_vr/ --lerobot out/sim_dataset
+cd "$TELEOP" && .venv/bin/python -m deployment.export_demos ~/labgen/out/yam_vr/ --lerobot out/sim_dataset
 ```
 
 **Do not pass `--fps` above 20** for sim data: yam_vr_teleop's exporter only

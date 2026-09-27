@@ -3,6 +3,32 @@
 Read this fully before writing code. It contains decisions that are already
 made and constraints that are not obvious from the codebase.
 
+## If you are a session on a lab machine
+
+The owner has pulled this repo onto a lab machine and expects you to act
+without being briefed. Do this:
+
+1. **Work out which machine you are on.** A machine with the YAM arms' CAN
+   adapters and the lab teleop checkout (`yam_vr_teleop`) is the *arm laptop*.
+   A machine with Isaac Lab and an NVIDIA GPU is the *sim machine*. It can be
+   both.
+2. **Follow `README.md` → "Lab runbook"** for that machine, and its
+   **"Lab session checklist"**. It has the exact commands, the expected output
+   of each, and how to hand results back.
+3. **Real arms: never move one without the owner confirming in this session**
+   that someone is at the e-stop and the workspace is clear. The recorder's
+   `--i-have-cleared-the-workspace` flag is that confirmation; do not pass it on
+   your own. Stop the lab teleop first. Never edit the teleop's configs to make
+   a check pass.
+4. **Hand results back as files in the repo** (`data/lab/<date>/`), as the
+   checklist says, and report what you measured, not what you intended.
+
+Scope has grown beyond the phase-1 text below, at the owner's direction: the
+bimanual YAM sim, phone teleop, demo recording and MimicGen data generation
+(`labgen_tasks/`, `scripts/teleop_task.py`, `scripts/mimic.py`) are in scope.
+The rules below still hold everywhere, especially: no invented dimensions,
+fail loudly, and anything unverified is reported as unverified.
+
 ## What this is
 
 `labgen` turns video of a real chemistry lab bench into a scene that loads in
