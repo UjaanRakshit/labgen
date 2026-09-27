@@ -25,11 +25,24 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-sys.path.insert(0, "/mnt/c/Ujaan Docx/Research/labgen")
+def _labgen_repo() -> str:
+    """The labgen checkout: $LABGEN_REPO, else the repo this script sits in, else
+    this project's WSL path (scripts are synced out of the repo on that machine)."""
+    import os
+    from pathlib import Path as _P
+    here = _P(__file__).resolve().parents[1]
+    return os.environ.get("LABGEN_REPO") or (str(here) if (here / "labgen" / "__init__.py").is_file()
+                                             else "/mnt/c/Ujaan Docx/Research/labgen")
+
+
+sys.path.insert(0, _labgen_repo())
 from labgen.control import YAM_PAD  # noqa: E402
 
-URDF = Path("/home/ujaan/isaac/i2rt/i2rt/robot_models/arm/yam/v1/yam.urdf")
-CONVERTER = "/home/ujaan/isaac/.venv-usdconv/bin/urdf_usd_converter"
+import os  # noqa: E402
+# i2rt's yam.urdf (arm + linear gripper) and NVIDIA's standalone converter, in its
+# own venv. Override per machine with YAM_URDF / URDF_USD_CONVERTER.
+URDF = Path(os.environ.get("YAM_URDF", "/home/ujaan/isaac/i2rt/i2rt/robot_models/arm/yam/v1/yam.urdf"))
+CONVERTER = os.environ.get("URDF_USD_CONVERTER", "/home/ujaan/isaac/.venv-usdconv/bin/urdf_usd_converter")
 TIPS = {"tip_left": +1, "tip_right": -1}      # side convention of FingerPad.centre_for
 
 
@@ -92,7 +105,7 @@ def set_collision_approximation(usd_path: Path) -> None:
 
 
 def main() -> int:
-    out_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "/home/ujaan/isaac/labgen/assets/yam")
+    out_dir = Path(sys.argv[1] if len(sys.argv) > 1 else Path(_labgen_repo()) / "out/yam")
     urdf = patched_urdf(out_dir / "yam_labgen.urdf")
     subprocess.run([CONVERTER, "--no-layer-structure", "--no-physics-scene", str(urdf),
                     str(out_dir / "usd")], check=True)

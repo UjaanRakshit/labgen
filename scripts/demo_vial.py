@@ -15,13 +15,23 @@ import math
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "/mnt/c/Ujaan Docx/Research/labgen")
+def _labgen_repo() -> str:
+    """The labgen checkout: $LABGEN_REPO, else the repo this script sits in, else
+    this project's WSL path (scripts are synced out of the repo on that machine)."""
+    import os
+    from pathlib import Path as _P
+    here = _P(__file__).resolve().parents[1]
+    return os.environ.get("LABGEN_REPO") or (str(here) if (here / "labgen" / "__init__.py").is_file()
+                                             else "/mnt/c/Ujaan Docx/Research/labgen")
+
+
+sys.path.insert(0, _labgen_repo())
 
 import torch  # noqa: E402
 from isaaclab.app import add_launcher_args, launch_simulation  # noqa: E402
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--out", default="/home/ujaan/isaac/labgen/demos/vial_scripted.hdf5")
+ap.add_argument("--out", default="demos/vial_scripted.hdf5")
 add_launcher_args(ap)
 args = ap.parse_args()
 

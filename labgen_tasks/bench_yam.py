@@ -12,6 +12,9 @@ What is the real robot's, and what is not:
   gravity      compensated through the actuators (MuJoCo actuatorgravcomp), i.e.
                inside the motors' torque limits, as the real controller does.
                Real factor on j2-j4 is 1.1-1.2; modelled as 1.0.
+  command      the lab teleop's own limits (yam_vr_teleop): joint targets within
+               0.25 rad of measured and slewed at <= 1.5 rad/s; proportional
+               gripper slewed at one full range per second
   gripper      pad boxes of labgen.control.YAM_PAD, UNVERIFIED; its PD gains are
                a controller choice, force capped at GRIP_FORCE_N
   second arm   placement is a PLACEHOLDER until the rig is measured
@@ -48,17 +51,31 @@ from isaaclab_newton.physics import (MJWarpSolverCfg, NewtonCfg, NewtonCollision
                                      NewtonShapeCfg)
 
 from labgen.control import YAM_JAWS
-from labgen_tasks.actions import (GuardedDifferentialIKActionCfg,
-                                  RateLimitedBinaryJointPositionActionCfg)
+from labgen_tasks.actions import ProportionalGripperActionCfg, TeleopLimitedIKActionCfg
 from labgen.hardware import YAM_V1
 from labgen.isaaclab_cfg import RESET_POSE_RAD
 from labgen.settle import CONTACT_KD, CONTACT_KE
 from labgen.types import SceneSpec
 
-ASSETS = Path(os.environ.get("LABGEN_ASSETS", "/home/ujaan/isaac/labgen"))
-YAM_USD = str(ASSETS / "assets/yam/usd/yam.usdc")          # scripts/make_yam_usd.py
-SCENE_USD = str(ASSETS / "bench_arm.usda")                 # labgen.usda from the SceneSpec
-SCENE_JSON = Path(__file__).resolve().parents[1] / "examples/bench_arm.json"
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _asset(env: str, *candidates: Path) -> str:
+    """$env if set, else the first candidate that exists, else the first (so a
+    missing asset fails loudly at spawn with a path that says what to build)."""
+    if os.environ.get(env):
+        return os.environ[env]
+    return str(next((c for c in candidates if c.exists()), candidates[0]))
+
+
+# Built by scripts/make_yam_usd.py (default out/yam/) and from the SceneSpec by
+# labgen.usda (out/). The /home/ujaan paths are this project's original WSL
+# machine, kept as fallbacks.
+YAM_USD = _asset("LABGEN_YAM_USD", REPO / "out/yam/usd/yam.usdc",
+                 Path("/home/ujaan/isaac/labgen/assets/yam/usd/yam.usdc"))
+SCENE_USD = _asset("LABGEN_SCENE_USD", REPO / "out/bench_arm.usda",
+                   Path("/home/ujaan/isaac/labgen/bench_arm.usda"))
+SCENE_JSON = REPO / "examples/bench_arm.json"
 
 # Grasp point: midpoint of the two pad faces, in the `gripper` link frame.
 # Computed from yam.urdf's finger joints and YAM_PAD; identical at every jaw
@@ -69,12 +86,13 @@ GRASP_OFFSET_M = (0.0, 0.0, 0.138)
 # from 2 to 100 N; 25 N sits mid-range. A controller setting, not a spec.
 GRIP_FORCE_N = 25.0
 
-# Finger target speed (labgen_tasks.actions). A binary close otherwise saturates
-# the drive at the force cap from the first step -- damping cannot slow a
-# saturated PD, and Newton does not enforce the joint velocity limit -- so the
-# pads hit the glass at 0.4-0.5 m/s, shoved the beaker 45 mm and went through
-# its wall. UNVERIFIED: the real linear gripper's speed is not in the rig config.
-JAW_SPEED_M_S = 0.05
+# The lab teleop's command stage (yam_vr_teleop, github.com/nhern026/yam_vr_teleop):
+# deployment/config.yaml `safety` for the arm, quest_teleop.py:971 for the
+# gripper slew. SOURCED from the code that drives the real arms -- these are the
+# limits the real arm is commanded under, applied by labgen_tasks.actions.
+TELEOP_MAX_COMMAND_OFFSET_RAD = 0.25      # target never further than this from measured
+TELEOP_MAX_COMMAND_VELOCITY_RAD_S = 1.5   # commanded joint angle change per second
+TELEOP_GRIPPER_RATE_PER_S = 1.0           # opening command, full ranges per second (~0.047 m/s/finger)
 
 # PLACEHOLDER: the second arm across the bench, facing the first. Same value
 # scripts/teleop_sim.py uses. Replace with the measured base-to-base offset.
@@ -206,6 +224,12 @@ def hand_orn(env, robot: str = "robot0"):
     return _xyzw_to_wxyz(q)
 
 
+def joint_target(env, robot: str = "robot0"):
+    """Commanded joint positions (all 8: arm, then the two fingers). The lab's
+    data format records the commanded target as the action; this is it."""
+    return env.scene[robot].data.joint_pos_target.torch
+
+
 def object_pose(env, name: str = "beaker"):
     obj = env.scene[name]
     return torch.cat((obj.data.root_pos_w.torch - env.scene.env_origins,
@@ -218,12 +242,14 @@ class ObservationsCfg:
     class PolicyCfg(ObsGroup):
         robot0_joint_pos = ObsTerm(func=mdp.joint_pos, params={"asset_cfg": SceneEntityCfg("robot0")})
         robot0_joint_vel = ObsTerm(func=mdp.joint_vel, params={"asset_cfg": SceneEntityCfg("robot0")})
+        robot0_joint_target = ObsTerm(func=joint_target, params={"robot": "robot0"})
         robot0_eef_pos = ObsTerm(func=eef_pos, params={"robot": "robot0"})
         robot0_eef_quat = ObsTerm(func=eef_quat, params={"robot": "robot0"})
         robot0_base_ori = ObsTerm(func=base_ori, params={"robot": "robot0"})
         robot0_hand_orn = ObsTerm(func=hand_orn, params={"robot": "robot0"})
         robot1_joint_pos = ObsTerm(func=mdp.joint_pos, params={"asset_cfg": SceneEntityCfg("robot1")})
         robot1_joint_vel = ObsTerm(func=mdp.joint_vel, params={"asset_cfg": SceneEntityCfg("robot1")})
+        robot1_joint_target = ObsTerm(func=joint_target, params={"robot": "robot1"})
         robot1_eef_pos = ObsTerm(func=eef_pos, params={"robot": "robot1"})
         robot1_eef_quat = ObsTerm(func=eef_quat, params={"robot": "robot1"})
         robot1_base_ori = ObsTerm(func=base_ori, params={"robot": "robot1"})
@@ -243,19 +269,21 @@ class ObservationsCfg:
 
 # ---- actions: [robot0 dpose(6), robot0 grip(1), robot1 dpose(6), robot1 grip(1)] ----
 
-def _ik(robot: str) -> GuardedDifferentialIKActionCfg:
-    return GuardedDifferentialIKActionCfg(
+def _ik(robot: str) -> TeleopLimitedIKActionCfg:
+    return TeleopLimitedIKActionCfg(
+        max_command_offset_rad=TELEOP_MAX_COMMAND_OFFSET_RAD,
+        max_command_velocity_rad_s=TELEOP_MAX_COMMAND_VELOCITY_RAD_S,
         asset_name=robot, joint_names=_SHOULDER + _WRIST, body_name="gripper",
         controller=DifferentialIKControllerCfg(command_type="pose", use_relative_mode=True,
                                                ik_method="dls"),
         scale=0.5,
-        body_offset=GuardedDifferentialIKActionCfg.OffsetCfg(pos=list(GRASP_OFFSET_M)),
+        body_offset=TeleopLimitedIKActionCfg.OffsetCfg(pos=list(GRASP_OFFSET_M)),
     )
 
 
-def _grip(robot: str) -> RateLimitedBinaryJointPositionActionCfg:
-    return RateLimitedBinaryJointPositionActionCfg(
-        speed=JAW_SPEED_M_S,
+def _grip(robot: str) -> ProportionalGripperActionCfg:
+    return ProportionalGripperActionCfg(
+        rate_per_s=TELEOP_GRIPPER_RATE_PER_S,
         asset_name=robot, joint_names=["joint7", "joint8"],
         open_command_expr={"joint[78]": JAW_OPEN_Q},
         close_command_expr={"joint[78]": YAM_JAWS.q_closed},

@@ -12,12 +12,23 @@ unchanged, in this process, with the remaining arguments.
 import runpy
 import sys
 
-sys.path.insert(0, "/mnt/c/Ujaan Docx/Research/labgen")
+def _labgen_repo() -> str:
+    """The labgen checkout: $LABGEN_REPO, else the repo this script sits in, else
+    this project's WSL path (scripts are synced out of the repo on that machine)."""
+    import os
+    from pathlib import Path as _P
+    here = _P(__file__).resolve().parents[1]
+    return os.environ.get("LABGEN_REPO") or (str(here) if (here / "labgen" / "__init__.py").is_file()
+                                             else "/mnt/c/Ujaan Docx/Research/labgen")
+
+
+sys.path.insert(0, _labgen_repo())
 # isaaclab_mimic ships in the same pinned Isaac Lab checkout but is not
 # installed in its venv. Put its source on the path rather than pip-installing
 # into that environment (CLAUDE.md rule 5): same code, same commit, and the
 # environment itself is untouched.
-sys.path.insert(0, "/home/ujaan/isaac/IsaacLab/source/isaaclab_mimic")
+ISAACLAB = __import__("os").environ.get("ISAACLAB_DIR", "/home/ujaan/isaac/IsaacLab")
+sys.path.insert(0, f"{ISAACLAB}/source/isaaclab_mimic")
 import isaaclab.app  # noqa: E402
 import labgen_tasks  # noqa: E402,F401
 
@@ -104,8 +115,8 @@ if os.environ.get("LABGEN_IK_DEBUG"):
     DifferentialIKController.compute = _checked
 
 TOOLS = {
-    "annotate": "/home/ujaan/isaac/IsaacLab/scripts/imitation_learning/isaaclab_mimic/annotate_demos.py",
-    "generate": "/home/ujaan/isaac/IsaacLab/scripts/imitation_learning/isaaclab_mimic/generate_dataset.py",
+    "annotate": f"{ISAACLAB}/scripts/imitation_learning/isaaclab_mimic/annotate_demos.py",
+    "generate": f"{ISAACLAB}/scripts/imitation_learning/isaaclab_mimic/generate_dataset.py",
 }
 
 if len(sys.argv) < 2 or sys.argv[1] not in TOOLS:

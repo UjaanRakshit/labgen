@@ -30,7 +30,17 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, "/mnt/c/Ujaan Docx/Research/labgen")
+def _labgen_repo() -> str:
+    """The labgen checkout: $LABGEN_REPO, else the repo this script sits in, else
+    this project's WSL path (scripts are synced out of the repo on that machine)."""
+    import os
+    from pathlib import Path as _P
+    here = _P(__file__).resolve().parents[1]
+    return os.environ.get("LABGEN_REPO") or (str(here) if (here / "labgen" / "__init__.py").is_file()
+                                             else "/mnt/c/Ujaan Docx/Research/labgen")
+
+
+sys.path.insert(0, _labgen_repo())
 
 from isaaclab.app import add_launcher_args, launch_simulation  # noqa: E402
 
@@ -42,7 +52,7 @@ ap.add_argument("--frame-port", type=int, default=9872)
 ap.add_argument("--view-width", type=int, default=960)
 ap.add_argument("--view-height", type=int, default=540)
 ap.add_argument("--scale", type=float, default=1.0, help="device-to-hand motion scale")
-ap.add_argument("--out", default="/home/ujaan/isaac/labgen/demos/bench.hdf5")
+ap.add_argument("--out", default="demos/bench.hdf5")
 ap.add_argument("--seconds", type=float, default=0.0, help="stop after this long (0 = never)")
 ap.add_argument("--task", default="bench", choices=("bench", "vial"),
                 help="bench: free play. vial: pick the vial, set it on the hotplate, take "
@@ -74,7 +84,7 @@ BENCH_BOX = Workspace(lower_m=(-0.45, -0.05, 0.005), upper_m=(0.45, 0.75, 0.45))
 HANDS = {"left": 0, "right": 1}
 UNVERIFIED = [
     "finger pads (size, friction): measured off the URDF mesh, not calipered",
-    f"grip force cap {B.GRIP_FORCE_N} N and jaw speed {B.JAW_SPEED_M_S} m/s: controller choices",
+    f"grip force cap {B.GRIP_FORCE_N} N and finger PD gains: controller choices",
     f"robot1 placement {B.ROBOT1_POS}: PLACEHOLDER, rig not measured",
     "scene object dimensions: see the SceneSpec's unsourced list",
     "gravity compensation 1.0 (real controller uses 1.1-1.2 on j2-j4)",
@@ -147,7 +157,14 @@ def main() -> int:
     cfg.recorders.dataset_filename = out.stem
     cfg.recorders.dataset_export_mode = DatasetExportMode.EXPORT_SUCCEEDED_ONLY
 
-    host = TcpPoseSource.wsl_default_gateway() if args.host == "AUTO" else args.host
+    if args.host == "AUTO":
+        # Under WSL2 the phone bridge runs on the Windows host, reached at the
+        # default gateway. On native Linux the gateway is the router -- the
+        # bridge is on this machine.
+        wsl = "microsoft" in Path("/proc/version").read_text().lower() if Path("/proc/version").exists() else False
+        host = TcpPoseSource.wsl_default_gateway() if wsl else "127.0.0.1"
+    else:
+        host = args.host
 
     with launch_simulation(cfg, args):
         env = gym.make(TASK, cfg=cfg)
@@ -165,7 +182,7 @@ def main() -> int:
         frame = screen_frame()
         arms = [dict(ret=RelativeRetargeter(position_scale=args.scale, use_orientation=False,
                                             frame=frame, workspace=BENCH_BOX),
-                     target=None, grip_closed=False) for _ in range(2)]
+                     target=None, grip_closed=False, grip=0.0) for _ in range(2)]
 
         viewer = sock = None
         if args.stream:
@@ -206,6 +223,7 @@ def main() -> int:
                     arm["target"] = None if not arm["ret"].engaged else (
                         tgt.position_m if tgt is not None else arm["target"])
                     arm["grip_closed"] = ev.grip > 0.5
+                    arm["grip"] = float(min(max(ev.grip, 0.0), 1.0))
 
                 if reset in ("save", "discard"):
                     rm = u.recorder_manager
@@ -223,7 +241,7 @@ def main() -> int:
                     pol = obs["policy"]
                     for arm in arms:
                         arm["ret"].release()
-                        arm["target"], arm["grip_closed"] = None, False
+                        arm["target"], arm["grip_closed"], arm["grip"] = None, False, 0.0
                     ticks = 0
                     continue
 
@@ -236,7 +254,8 @@ def main() -> int:
                         d = np.clip(np.asarray(arm["target"]) - p, -MAX_SPEED_M_S / hz, MAX_SPEED_M_S / hz)
                         a[0, 7 * i:7 * i + 3] = torch.as_tensor(Rb.T @ d / scale)
                         a[0, 7 * i + 3:7 * i + 6] = torch.as_tensor(Rb.T @ point_down(Rh) / scale)
-                    a[0, 7 * i + 6] = -1.0 if arm["grip_closed"] else 1.0
+                    # Proportional, like the lab's trigger: slider 0 = open (+1), 1 = closed (-1).
+                    a[0, 7 * i + 6] = 1.0 - 2.0 * arm["grip"]
 
                 t0 = time.perf_counter()
                 obs, _, term, trunc, _ = env.step(a)
@@ -248,7 +267,7 @@ def main() -> int:
                     pol = obs["policy"]
                     for arm in arms:
                         arm["ret"].release()
-                        arm["target"], arm["grip_closed"] = None, False
+                        arm["target"], arm["grip_closed"], arm["grip"] = None, False, 0.0
                     ticks = 0
                     continue
                 step_ms += (time.perf_counter() - t0) * 1000

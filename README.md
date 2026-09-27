@@ -8,6 +8,123 @@ This is phase 1 of a larger project. Phase 1 ends at "the scene is correct".
 It contains no policy loading, no rollouts, no success predicates and no
 scoring, and it should not grow any. See `CLAUDE.md`.
 
+## Lab runbook
+
+For whoever is at the lab — a person, or a Claude session on a lab machine —
+with none of this project's history. Three jobs, on up to three machines:
+
+| where | job | needs |
+| --- | --- | --- |
+| **arm laptop** — Linux, runs [yam_vr_teleop](https://github.com/nhern026/yam_vr_teleop), GS_USB CAN adapters | record the real arm's response (sim-to-real) | yam_vr_teleop's venv (i2rt, pyyaml) + this repo |
+| **Isaac Lab machine** — Ubuntu or WSL2, NVIDIA GPU | the sim: tasks, phone teleop, MimicGen | Isaac Lab `develop` @ `a8b4da3c2`, kit-less Newton |
+| anywhere | turn sim demos into the lab's dataset format | numpy, h5py |
+
+**Do not `pip install` into the Isaac Lab or yam_vr_teleop environments** (CLAUDE.md
+rule 5). Everything extra here lives in its own venv.
+
+### 1. Real arm: sim-to-real recording (arm laptop)
+
+Non-negotiable: a person at the e-stop, the workspace clear, and the teleop
+**stopped** — the recorder takes the teleop's own bus lock and checks the CAN
+adapter's USB serial against the teleop config, and refuses otherwise. Motion is
+0.10 rad eased steps, one joint at a time, from the rig's reset pose; it aborts
+and holds if any joint exceeds 3 rad/s.
+
+```bash
+git clone https://github.com/UjaanRakshit/labgen ~/labgen
+cd ~/yam_vr_teleop
+.venv/bin/pip show i2rt | head -2          # report this: the sim's gains come from i2rt 1.1.2
+.venv/bin/python -m deployment.preflight --config deployment/config.yaml \
+    --second-config deployment/config_left.yaml            # nothing energizes
+.venv/bin/python ~/labgen/scripts/sim2real_record.py --out ~/i2rt_sim.npz   # dry run, i2rt's sim
+.venv/bin/python ~/labgen/scripts/sim2real_record.py --backend real \
+    --teleop-config deployment/config.yaml --i-have-cleared-the-workspace --out ~/real_right.npz
+.venv/bin/python ~/labgen/scripts/sim2real_record.py --backend real \
+    --teleop-config deployment/config_left.yaml --i-have-cleared-the-workspace --out ~/real_left.npz
+```
+
+Each real run is ~25 s. Bring back both `.npz` files and the i2rt version. The
+comparison runs anywhere with numpy:
+
+```bash
+python scripts/sim2real_compare.py ~/real_right.npz data/sim2real/newton_prediction.npz
+```
+
+### 2. The sim (Isaac Lab machine)
+
+One-time assets. The URDF→USD converter goes in **its own** venv (Isaac Lab's
+URDF/MJCF spawners need Isaac Sim, which the kit-less install does not have):
+
+```bash
+uv venv -p 3.12 ~/.venv-usdconv && VIRTUAL_ENV=~/.venv-usdconv uv pip install urdf-usd-converter numpy
+git clone https://github.com/i2rt-robotics/i2rt ~/i2rt                     # yam.urdf
+YAM_URDF=~/i2rt/i2rt/robot_models/arm/yam/v1/yam.urdf \
+URDF_USD_CONVERTER=~/.venv-usdconv/bin/urdf_usd_converter \
+  ~/.venv-usdconv/bin/python scripts/make_yam_usd.py        # -> out/yam/usd/yam.usdc (colliders, pads, coupled fingers)
+python scripts/make_bench_vial.py                           # -> examples/bench_vial.json, out/bench_vial.usda
+python -c "from labgen.types import SceneSpec; from labgen import usda; \
+usda.write_scene(SceneSpec.read('examples/bench_arm.json'), 'out/bench_arm.usda')"
+```
+
+Then, with `PY=~/IsaacLab/.venv/bin/python` (set `ISAACLAB_DIR` if Isaac Lab is
+not at `/home/ujaan/isaac/IsaacLab`):
+
+```bash
+$PY scripts/run_bench_task.py      # expect: settle PASS, pick PASS (lift ~99 mm, slip < 1 mm)
+$PY scripts/demo_vial.py           # scripted vial task; expect SUCCESS -> demos/vial_scripted.hdf5
+```
+
+**Phone teleop.** The phone page is stdlib Python and must run where the phone
+can reach it — on native Linux, the same machine; under WSL2, on the Windows side:
+
+```bash
+python scripts/teleop_touch.py                               # prints the URL to open on the phone
+$PY scripts/teleop_task.py --task vial --stream --out demos/vial_real.hdf5
+```
+
+Choose LEFT on the phone (robot0, next to the vial), ENGAGE, drag to move, slider
+to grip. Completing the task (vial onto the hotplate, released, back onto the
+bench) saves the demo and resets; SAVE DEMO / DISCARD override. Demos are recorded
+already annotated for MimicGen.
+
+**MimicGen**, from five or more demos:
+
+```bash
+$PY scripts/mimic.py generate --task Isaac-LabBench-YAM-VialHotplate-IK-Rel-Mimic-v0 \
+    --input_file demos/vial_real.hdf5 --output_file demos/vial_gen.hdf5 \
+    --generation_num_trials 50 --num_envs 1
+```
+
+Expect roughly half the attempts to succeed; only successes are written.
+
+### 3. Sim demos in the lab's dataset format
+
+```bash
+python scripts/export_yam_vr.py demos/vial_gen.hdf5 out/yam_vr/
+cd ~/yam_vr_teleop && .venv/bin/python -m deployment.export_demos ~/labgen/out/yam_vr/ --lerobot out/sim_dataset
+```
+
+**Do not pass `--fps` above 20** for sim data: yam_vr_teleop's exporter only
+resamples down, and asked for more it relabels the frames without resampling
+(a 20 Hz demo exported "at 30 fps" is 1.5× time-compressed, with no warning).
+
+### What the sim reproduces from the real stack, and what it does not
+
+Reproduced, from the code that drives the real arms: i2rt 1.1.2's per-joint
+gains and torque limits; gravity compensation through the actuators; the
+teleop's command stage — joint targets within 0.25 rad of measured and slewed at
+≤ 1.5 rad/s, proportional gripper slewed at one full range per second
+(yam_vr_teleop `config.yaml` `safety`, `quest_teleop.py:971`); the rig's reset pose.
+
+Different: 20 Hz control (real 100 Hz); Isaac Lab's damped-least-squares
+relative IK (real: mink QP on an absolute target); no One Euro filter.
+
+**Unverified**, and every recorded dataset says so in its attributes: finger pad
+size and friction (URDF mesh, not calipers), finger PD gains and the 25 N grip
+cap, the second arm's placement (PLACEHOLDER), the vial's neck and the
+hotplate's dimensions (catalog TODOs), and gravity-comp factor (real 1.1–1.2 on
+j2–j4, sim 1.0). No real-arm log has been compared yet.
+
 ## The design decision everything else follows from
 
 Do not reconstruct objects from video. Identify them and fit a parametric
@@ -202,8 +319,9 @@ rig's recorded reset pose, then a slow shoulder sine, at the teleop's 100 Hz —
 on both sides and compared:
 
 ```
-# in the lab venv (sim by default; the real arm needs two explicit flags)
-python scripts/sim2real_record.py --backend real --channel can0        --i-have-cleared-the-workspace --out real_can0.npz
+# on the arm laptop, in yam_vr_teleop's venv -- see the Lab runbook for the full procedure
+python scripts/sim2real_record.py --backend real --teleop-config deployment/config.yaml \
+    --i-have-cleared-the-workspace --out real_right.npz
 # in the Isaac Lab env
 python scripts/sim2real_newton.py yam.urdf --out newton_sim.npz
 python scripts/sim2real_compare.py real_can0.npz newton_sim.npz
