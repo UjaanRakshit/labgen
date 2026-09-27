@@ -134,14 +134,14 @@ def _yam(prim: str, pos, rot_xyzw) -> ArticulationCfg:
     )
 
 
-def _objects() -> dict[str, RigidObjectCfg]:
+def _objects(scene_json: Path = SCENE_JSON) -> dict[str, RigidObjectCfg]:
     """Every free body in the SceneSpec, attached to the prim the scene USD made.
 
     init_state must repeat the spec's pose: Isaac Lab resets a rigid object to
     its cfg's init_state, not to where the USD put it, so leaving it at the
     default would teleport every object to the env origin on the first reset.
     """
-    spec = SceneSpec.read(SCENE_JSON)
+    spec = SceneSpec.read(scene_json)
     out = {}
     for o in spec.free_bodies:
         w, x, y, z = o.orientation_wxyz

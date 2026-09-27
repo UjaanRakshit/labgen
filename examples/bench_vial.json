@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "name": "bench_vial",
+  "robot_base_frame": "yam_base_link",
+  "source": {
+    "method": "hand_authored",
+    "note": "bench_arm plus a 20 mL scintillation vial, for the vial-on-hotplate task. Every other object is where bench_arm has it.",
+    "marker_config": "not_applicable_hand_authored",
+    "video": "none",
+    "git_sha": "fc1ee6d052e604b298d8c72d7a80f65430676303",
+    "frame_convention": "Robot base at the origin, worktop surface at z=0, bench extending in +y in front of the robot."
+  },
+  "objects": [
+    {
+      "instance_id": "bench",
+      "catalog_key": "bench_top",
+      "position": [
+        0.0,
+        0.26,
+        -0.04
+      ],
+      "orientation_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed": true,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "Static fixture, sunk by its own thickness so the worktop surface is exactly z=0 -- the plane the arm bolts to and the plane every object rests on."
+    },
+    {
+      "instance_id": "hotplate",
+      "catalog_key": "hotplate_stirrer",
+      "position": [
+        -0.3625,
+        0.2832,
+        0.0
+      ],
+      "orientation_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed": false,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "-52 deg, 0.46 m from the robot base."
+    },
+    {
+      "instance_id": "petri",
+      "catalog_key": "petri_dish_100",
+      "position": [
+        -0.1749,
+        0.3928,
+        0.0
+      ],
+      "orientation_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed": false,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "-24 deg, 0.43 m from the robot base."
+    },
+    {
+      "instance_id": "test_tube",
+      "catalog_key": "test_tube_16x100",
+      "position": [
+        0.0293,
+        0.419,
+        0.0
+      ],
+      "orientation_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed": false,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "+4 deg, 0.42 m from the robot base."
+    },
+    {
+      "instance_id": "beaker",
+      "catalog_key": "beaker_250",
+      "position": [
+        0.2,
+        0.3464,
+        0.0
+      ],
+      "orientation_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed": false,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "+30 deg, 0.40 m from the robot base."
+    },
+    {
+      "instance_id": "vial",
+      "catalog_key": "vial_20ml",
+      "position": [
+        -0.075,
+        0.3008,
+        0.0
+      ],
+      "orientation_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed": false,
+      "confidence": 1.0,
+      "provenance": "manual",
+      "generated": null,
+      "note": "-14 deg, 0.31 m from the robot base. Grasped at the body; the catalog has no neck geometry (TODO)."
+    }
+  ]
+}

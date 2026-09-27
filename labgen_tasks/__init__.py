@@ -14,3 +14,17 @@ gym.register(
     kwargs={"env_cfg_entry_point": f"{__name__}.bench_yam:BenchYamIkRelEnvCfg"},
     disable_env_checker=True,
 )
+
+gym.register(
+    id="Isaac-LabBench-YAM-VialHotplate-IK-Rel-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={"env_cfg_entry_point": f"{__name__}.vial_hotplate:VialHotplateEnvCfg"},
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-LabBench-YAM-VialHotplate-IK-Rel-Mimic-v0",
+    entry_point=f"{__name__}.vial_hotplate:VialHotplateMimicEnv",
+    kwargs={"env_cfg_entry_point": f"{__name__}.vial_hotplate:VialHotplateMimicEnvCfg"},
+    disable_env_checker=True,
+)

@@ -44,6 +44,9 @@ ap.add_argument("--view-height", type=int, default=540)
 ap.add_argument("--scale", type=float, default=1.0, help="device-to-hand motion scale")
 ap.add_argument("--out", default="/home/ujaan/isaac/labgen/demos/bench.hdf5")
 ap.add_argument("--seconds", type=float, default=0.0, help="stop after this long (0 = never)")
+ap.add_argument("--task", default="bench", choices=("bench", "vial"),
+                help="bench: free play. vial: pick the vial, set it on the hotplate, take "
+                     "it off -- recorded already annotated for MimicGen, auto-saved on success")
 add_launcher_args(ap)
 args = ap.parse_args()
 
@@ -57,7 +60,9 @@ from isaaclab.managers import DatasetExportMode  # noqa: E402
 from labgen.devices import RelativeRetargeter, TcpPoseSource, Workspace  # noqa: E402
 from labgen_tasks import bench_yam as B  # noqa: E402
 
-TASK = "Isaac-LabBench-YAM-IK-Rel-v0"
+TASKS = {"bench": "Isaac-LabBench-YAM-IK-Rel-v0",
+         "vial": "Isaac-LabBench-YAM-VialHotplate-IK-Rel-Mimic-v0"}
+TASK = TASKS[args.task]
 MAX_SPEED_M_S = 0.25            # grasp point speed cap per tick
 MAX_TURN_RAD = 0.10             # per-tick orientation correction cap
 DOWN = np.array([0.0, 0.0, -1.0])
@@ -121,14 +126,23 @@ def stamp(path: Path, n_saved: int) -> None:
 def main() -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    cfg = B.BenchYamIkRelEnvCfg()
+    if args.task == "vial":
+        from labgen_tasks import vial_hotplate as V
+        from labgen_tasks.recorders import MimicAnnotatedRecorderManagerCfg
+        cfg = V.VialHotplateMimicEnvCfg()
+        # Success ends the episode and the recorder exports it: completing the
+        # task IS the save. SAVE DEMO / DISCARD still work as overrides.
+        recorder = MimicAnnotatedRecorderManagerCfg()
+    else:
+        cfg = B.BenchYamIkRelEnvCfg()
+        recorder = ActionStateRecorderManagerCfg()
     cfg.terminations.time_out = None             # the operator ends episodes
     if args.stream:
         # Off by default kit-less: the arms' link meshes arrive only as
         # invisible colliders, and the streamed view showed a bench with no
         # robot on it.
         cfg.sim.physics.load_visual_shapes = True
-    cfg.recorders = ActionStateRecorderManagerCfg()
+    cfg.recorders = recorder
     cfg.recorders.dataset_export_dir_path = str(out.parent)
     cfg.recorders.dataset_filename = out.stem
     cfg.recorders.dataset_export_mode = DatasetExportMode.EXPORT_SUCCEEDED_ONLY
@@ -225,7 +239,18 @@ def main() -> int:
                     a[0, 7 * i + 6] = -1.0 if arm["grip_closed"] else 1.0
 
                 t0 = time.perf_counter()
-                obs, *_ = env.step(a)
+                obs, _, term, trunc, _ = env.step(a)
+                if bool(term[0]) or bool(trunc[0]):
+                    # The task's success check fired: the env has already
+                    # exported the episode and reset itself.
+                    saved += 1
+                    print(f"SUCCESS -> demo {saved} saved automatically ({ticks} steps) -> {out}")
+                    pol = obs["policy"]
+                    for arm in arms:
+                        arm["ret"].release()
+                        arm["target"], arm["grip_closed"] = None, False
+                    ticks = 0
+                    continue
                 step_ms += (time.perf_counter() - t0) * 1000
                 window += 1
                 pol = obs["policy"]
