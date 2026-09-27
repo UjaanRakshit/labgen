@@ -54,3 +54,30 @@ class RateLimitedBinaryJointPositionActionCfg(BinaryJointPositionActionCfg):
     class_type: type = RateLimitedBinaryJointPositionAction
     speed: float = 0.05
     """Finger target speed [m/s for prismatic joints]."""
+
+
+from isaaclab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActionCfg  # noqa: E402
+from isaaclab.envs.mdp.actions.task_space_actions import DifferentialInverseKinematicsAction  # noqa: E402
+
+
+class GuardedDifferentialIKAction(DifferentialInverseKinematicsAction):
+    """Relative IK that skips its solve when the arm's state has diverged.
+
+    The env steps physics twice per control step and the IK re-solves before
+    each. If the first physics step diverges (NaN joint state -- see
+    labgen_tasks.envs.LabgenMimicEnv), the second solve inverts a NaN Jacobian
+    and raises "linalg.inv: matrix is singular", killing the whole process
+    before the env's own post-step recovery can run. Skipping the solve leaves
+    the previous joint targets in place; the env then detects the NaN state
+    and resets.
+    """
+
+    def apply_actions(self):
+        if not torch.isfinite(self._asset.data.joint_pos.torch).all():
+            return
+        super().apply_actions()
+
+
+@configclass
+class GuardedDifferentialIKActionCfg(DifferentialInverseKinematicsActionCfg):
+    class_type: type = GuardedDifferentialIKAction

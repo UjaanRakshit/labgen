@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import torch
+
 from isaaclab.envs import ManagerBasedRLMimicEnv
 
 
@@ -34,9 +36,44 @@ def restore_actuator_gains(env) -> None:
                 getattr(art, method)(**{kw: float(value)}, joint_ids=ids)
 
 
+def state_is_finite(env) -> bool:
+    for art in env.scene.articulations.values():
+        if not torch.isfinite(art.data.joint_pos.torch).all():
+            return False
+    for obj in env.scene.rigid_objects.values():
+        if not torch.isfinite(obj.data.root_pos_w.torch).all():
+            return False
+    return True
+
+
 class LabgenMimicEnv(ManagerBasedRLMimicEnv):
-    """Mimic env base for labgen tasks: survives the annotator's sim.reset()."""
+    """Mimic env base for labgen tasks.
+
+    * survives the annotator's sim.reset() (restore_actuator_gains)
+    * survives a physics blow-up. MimicGen replays source segments relative
+      to wherever the objects are NOW; if a release knocks the vial over, the
+      next grasp is aimed at a lying vial, the gripper turns sideways into the
+      hotplate, and the solver diverges -- joint positions NaN, measured in 2
+      of 3 five-trial generation runs, each of which then crashed the whole
+      run in the IK. A diverged state is one failed trial, not a crash: the
+      physics is rebuilt, gains restored, the env reset, and the generator's
+      own success check then records the trial as failed.
+    """
+
+    blowups = 0
 
     def reset_to(self, state, env_ids, seed=None, is_relative=False):
         restore_actuator_gains(self)
         return super().reset_to(state, env_ids, seed=seed, is_relative=is_relative)
+
+    def step(self, action):
+        out = super().step(action)
+        if state_is_finite(self):
+            return out
+        type(self).blowups += 1
+        print(f"[labgen] physics diverged (NaN state); rebuilding and resetting "
+              f"(blow-up {type(self).blowups})", flush=True)
+        self.sim.reset()
+        restore_actuator_gains(self)
+        obs, extras = self.reset()
+        return obs, out[1] * 0, out[2], out[3], extras

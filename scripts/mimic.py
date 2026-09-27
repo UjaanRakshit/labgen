@@ -71,30 +71,37 @@ isaaclab.app.AppLauncher = KitlessAppLauncher
 
 import os  # noqa: E402
 
-import torch  # noqa: E402
-from isaaclab.controllers.differential_ik import DifferentialIKController  # noqa: E402
+import os  # noqa: E402
 
-_compute = DifferentialIKController.compute
+if os.environ.get("LABGEN_IK_DEBUG"):
+    # Diagnostic for the generator's intermittent "linalg.inv: matrix is
+    # singular" in the IK. Reports non-finite IK inputs, then lets it run.
+    import torch  # noqa: E402
+    from isaaclab.controllers.differential_ik import DifferentialIKController  # noqa: E402
 
+    _compute = DifferentialIKController.compute
+    _calls = [0]
 
-def _synchronized_compute(self, ee_pos, ee_quat, jacobian, joint_pos):
-    """DifferentialIKController.compute after a CUDA synchronize.
+    def _checked(self, ee_pos, ee_quat, jacobian, joint_pos):
+        _calls[0] += 1
+        ins = dict(ee_pos=ee_pos, ee_quat=ee_quat, jacobian=jacobian, joint_pos=joint_pos,
+                   ee_pos_des=self.ee_pos_des, ee_quat_des=self.ee_quat_des)
+        bad = [k for k, v in ins.items() if not torch.isfinite(v).all()]
+        if bad:
+            print(f"IK DEBUG call {_calls[0]}: non-finite {bad}; ee_pos {ee_pos.tolist()} "
+                  f"joint_pos {joint_pos.tolist()} des {self.ee_pos_des.tolist()}", flush=True)
+        try:
+            return _compute(self, ee_pos, ee_quat, jacobian, joint_pos)
+        except Exception:
+            print(f"IK DEBUG FAILED call {_calls[0]}: method {self.cfg.ik_method} "
+                  f"params {self.cfg.ik_params} |J|max {float(jacobian.abs().max()):.3e} "
+                  f"J shape {tuple(jacobian.shape)} dtype {jacobian.dtype}", flush=True)
+            print("   J =", jacobian[0].tolist(), flush=True)
+            print("   ee_pos", ee_pos.tolist(), "des", self.ee_pos_des.tolist(),
+                  "joint_pos", joint_pos.tolist(), flush=True)
+            raise
 
-    Under the Mimic generator, the IK's damped least-squares solve crashed with
-    "linalg.inv: matrix is singular" -- impossible for J J^T + lambda^2 I unless
-    an input is garbage -- in 3 of 3 runs. Wrapping compute in a check that
-    READ its inputs (forcing a sync) made 2 of 2 runs complete 5/5 with every
-    input finite. A bare synchronize is what is left of that check: the reading
-    is consistent with the Jacobian being consumed before the physics has
-    finished writing it (the generator steps from an asyncio loop). The race
-    itself is not pinned down; the synchronize is the measured workaround.
-    """
-    if ee_pos.is_cuda:
-        torch.cuda.synchronize()
-    return _compute(self, ee_pos, ee_quat, jacobian, joint_pos)
-
-
-DifferentialIKController.compute = _synchronized_compute
+    DifferentialIKController.compute = _checked
 
 TOOLS = {
     "annotate": "/home/ujaan/isaac/IsaacLab/scripts/imitation_learning/isaaclab_mimic/annotate_demos.py",

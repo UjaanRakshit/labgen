@@ -48,7 +48,8 @@ from isaaclab_newton.physics import (MJWarpSolverCfg, NewtonCfg, NewtonCollision
                                      NewtonShapeCfg)
 
 from labgen.control import YAM_JAWS
-from labgen_tasks.actions import RateLimitedBinaryJointPositionActionCfg
+from labgen_tasks.actions import (GuardedDifferentialIKActionCfg,
+                                  RateLimitedBinaryJointPositionActionCfg)
 from labgen.hardware import YAM_V1
 from labgen.isaaclab_cfg import RESET_POSE_RAD
 from labgen.settle import CONTACT_KD, CONTACT_KE
@@ -242,13 +243,13 @@ class ObservationsCfg:
 
 # ---- actions: [robot0 dpose(6), robot0 grip(1), robot1 dpose(6), robot1 grip(1)] ----
 
-def _ik(robot: str) -> DifferentialInverseKinematicsActionCfg:
-    return DifferentialInverseKinematicsActionCfg(
+def _ik(robot: str) -> GuardedDifferentialIKActionCfg:
+    return GuardedDifferentialIKActionCfg(
         asset_name=robot, joint_names=_SHOULDER + _WRIST, body_name="gripper",
         controller=DifferentialIKControllerCfg(command_type="pose", use_relative_mode=True,
                                                ik_method="dls"),
         scale=0.5,
-        body_offset=DifferentialInverseKinematicsActionCfg.OffsetCfg(pos=list(GRASP_OFFSET_M)),
+        body_offset=GuardedDifferentialIKActionCfg.OffsetCfg(pos=list(GRASP_OFFSET_M)),
     )
 
 
