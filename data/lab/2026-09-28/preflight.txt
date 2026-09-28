@@ -1,0 +1,48 @@
+YAM teleop pre-flight. Nothing here commands a motor.
+
+
+--- right -------------------------------------------------------
+[ warn ] right: backend is 'sim', not 'i2rt'
+           this config will not drive a real arm; pass --backend i2rt or edit robot.backend
+[  ok  ] CAN can_right: up at 1 Mbit/s
+[  ok  ] right: gripper_type = linear_4310
+[  ok  ] right: saved gripper endpoints = /home/pair/pair-mse/yam_teleop/deployment/calibration/gripper_limits_right.json
+[ FAIL ] chain can_right: survey failed
+           a motor is missing, misidentified, or on the wrong id:
+               actual = _read_gear_ratio(iface, channel, motor_id, motor_type)
+             File "/home/pair/pair-mse/yam_teleop/.conda-env/lib/python3.13/site-packages/i2rt/motor_drivers/motor_check.py", line 346, in _read_gear_ratio
+               raise RuntimeError(
+               ...<6 lines>...
+               )
+           RuntimeError: motor type check failed on can_right: motor 1 (DM4340) did not give a readable Gr in 5 attempts (Failed CAN exchange for motor 1), so its type could not be confirmed and the robot was NOT started. Check that it is powered and the E stop is released; that its CAN id really is 1 (dm_motor_registers.py read ESC_ID --motor-id 1 --channel can_right); and that nothing else is using can_right, since a running robot, ping_motors.py or candump makes every register read fail.
+[  ok  ] right: reset pose is marked verified
+[  ok  ] right: reset pose clear of limits by 0.57 rad
+[ warn ] right: the operator joint box constrains nothing
+           safety.joint_position_* is wider than the arm's mechanical range on every joint, so the only limits in force are the arm's own. There is NO collision checking anywhere in this system: with two arms sharing a workspace, this box is the only thing that keeps them apart. Tighten it before running both.
+[  ok  ] right: operator frame measured (quest_frame_right.json)
+
+--- left --------------------------------------------------------
+[ warn ] left: backend is 'sim', not 'i2rt'
+           this config will not drive a real arm; pass --backend i2rt or edit robot.backend
+[  ok  ] CAN can_left: up at 1 Mbit/s
+[  ok  ] left: gripper_type = linear_4310
+[  ok  ] left: saved gripper endpoints = /home/pair/pair-mse/yam_teleop/deployment/calibration/gripper_limits_left.json
+[ FAIL ] chain can_left: survey failed
+           a motor is missing, misidentified, or on the wrong id:
+               actual = _read_gear_ratio(iface, channel, motor_id, motor_type)
+             File "/home/pair/pair-mse/yam_teleop/.conda-env/lib/python3.13/site-packages/i2rt/motor_drivers/motor_check.py", line 346, in _read_gear_ratio
+               raise RuntimeError(
+               ...<6 lines>...
+               )
+           RuntimeError: motor type check failed on can_left: motor 1 (DM4340) did not give a readable Gr in 5 attempts (Failed CAN exchange for motor 1), so its type could not be confirmed and the robot was NOT started. Check that it is powered and the E stop is released; that its CAN id really is 1 (dm_motor_registers.py read ESC_ID --motor-id 1 --channel can_left); and that nothing else is using can_left, since a running robot, ping_motors.py or candump makes every register read fail.
+[  ok  ] left: reset pose is marked verified
+[  ok  ] left: reset pose clear of limits by 0.57 rad
+[ warn ] left: the operator joint box constrains nothing
+           safety.joint_position_* is wider than the arm's mechanical range on every joint, so the only limits in force are the arm's own. There is NO collision checking anywhere in this system: with two arms sharing a workspace, this box is the only thing that keeps them apart. Tighten it before running both.
+[  ok  ] left: operator frame measured (quest_frame_left.json)
+
+==============================================================
+2 check(s) FAILED, 4 warning(s).
+Do not run --backend i2rt until the failures are cleared.
+
+exit status: 1

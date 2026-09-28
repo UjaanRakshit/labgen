@@ -19,8 +19,8 @@ it blank and say why.
 
 | arm | channel | file | ran to completion? | notes |
 | --- | --- | --- | --- | --- |
-| right | can1 | real_right.npz | | |
-| left | can0 | real_left.npz | | |
+| right | confirm from teleop config | real_right.npz | | |
+| left | confirm from teleop config | real_left.npz | | |
 
 Dry run (i2rt sim) console output:
 

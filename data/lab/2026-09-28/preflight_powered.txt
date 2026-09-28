@@ -1,0 +1,33 @@
+YAM teleop pre-flight. Nothing here commands a motor.
+
+
+--- right -------------------------------------------------------
+[ warn ] right: backend is 'sim', not 'i2rt'
+           this config will not drive a real arm; pass --backend i2rt or edit robot.backend
+[  ok  ] CAN can_right: up at 1 Mbit/s
+[  ok  ] right: gripper_type = linear_4310
+[  ok  ] right: saved gripper endpoints = /home/pair/pair-mse/yam_teleop/deployment/calibration/gripper_limits_right.json
+[  ok  ] chain can_right: all 7 motors answered with declared types
+[  ok  ] right: reset pose is marked verified
+[  ok  ] right: reset pose clear of limits by 0.57 rad
+[ warn ] right: the operator joint box constrains nothing
+           safety.joint_position_* is wider than the arm's mechanical range on every joint, so the only limits in force are the arm's own. There is NO collision checking anywhere in this system: with two arms sharing a workspace, this box is the only thing that keeps them apart. Tighten it before running both.
+[  ok  ] right: operator frame measured (quest_frame_right.json)
+
+--- left --------------------------------------------------------
+[ warn ] left: backend is 'sim', not 'i2rt'
+           this config will not drive a real arm; pass --backend i2rt or edit robot.backend
+[  ok  ] CAN can_left: up at 1 Mbit/s
+[  ok  ] left: gripper_type = linear_4310
+[  ok  ] left: saved gripper endpoints = /home/pair/pair-mse/yam_teleop/deployment/calibration/gripper_limits_left.json
+[  ok  ] chain can_left: all 7 motors answered with declared types
+[  ok  ] left: reset pose is marked verified
+[  ok  ] left: reset pose clear of limits by 0.57 rad
+[ warn ] left: the operator joint box constrains nothing
+           safety.joint_position_* is wider than the arm's mechanical range on every joint, so the only limits in force are the arm's own. There is NO collision checking anywhere in this system: with two arms sharing a workspace, this box is the only thing that keeps them apart. Tighten it before running both.
+[  ok  ] left: operator frame measured (quest_frame_left.json)
+
+==============================================================
+All checks passed with 4 warning(s). Read them before driving.
+
+exit status: 0

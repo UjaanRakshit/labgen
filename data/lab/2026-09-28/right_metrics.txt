@@ -1,0 +1,16 @@
+source: real-can_right
+ticks: 2000 at 100 Hz
+protocol: measured start, +0.10 rad eased step and eased return per joint
+base q (rad): [0.0006, 0.0013, 0.0032, -0.091, -0.0174, 0.0307]
+peak |measured velocity|: 0.8913 rad/s
+peak |position tracking error|: 0.0935 rad
+peak |reported effort|: 12.287 N m
+joint  observed step(rad)  rise(ms)  overshoot(%)  steady error(rad)
+j1     +0.0919                      140     0.0        0.0081
+j2     +0.1053                      120     5.7        0.0053
+j3     +0.0816              not reached     0.0        0.0184
+j4     +0.0641              not reached     0.0        0.0359
+j5     +0.0752              not reached     0.0        0.0248
+j6     +0.0813              not reached     0.0        0.0187
+final q - base (rad): [0.0072, 0.0103, 0.0103, 0.0019, 0.0137, 0.0103]
+The saved Newton prediction uses a different start pose/protocol and cannot be compared to this log. Regenerate it with scripts/sim2real_newton.py --protocol-log real_right.npz.

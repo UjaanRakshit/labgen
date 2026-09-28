@@ -15,7 +15,7 @@ with none of this project's history. Three jobs, on up to three machines:
 
 | where | job | needs |
 | --- | --- | --- |
-| **arm laptop** — Linux, runs [yam_vr_teleop](https://github.com/nhern026/yam_vr_teleop), GS_USB CAN adapters | record the real arm's response (sim-to-real) | yam_vr_teleop's venv (i2rt, pyyaml) + this repo |
+| **arm laptop** — Linux, YAM teleop checkout, GS_USB CAN adapters | record the real arm's response (sim-to-real) | teleop's own environment (i2rt, pyyaml) + this repo |
 | **Isaac Lab machine** — Ubuntu or WSL2, NVIDIA GPU | the sim: tasks, phone teleop, MimicGen | Isaac Lab `develop` @ `a8b4da3c2`, kit-less Newton |
 | anywhere | turn sim demos into the lab's dataset format | numpy, h5py |
 
@@ -25,32 +25,45 @@ rule 5). Everything extra here lives in its own venv.
 ### 1. Real arm: sim-to-real recording (arm laptop)
 
 Non-negotiable: a person at the e-stop, the workspace clear, and the teleop
-**stopped** — the recorder takes the teleop's own bus lock and checks the CAN
-adapter's USB serial against the teleop config, and refuses otherwise. Motion is
-0.10 rad eased steps, one joint at a time, from the rig's reset pose; it aborts
-and holds if any joint exceeds 3 rad/s.
+**stopped** — the recorder checks for a running teleop/CAN process, takes its
+own per-channel lock, and checks the CAN adapter's USB serial against the
+config or the host's persistent systemd link. This Jetson teleop checkout does
+not share the lock, so the operator must keep teleop stopped. The
+`--start-at-current` protocol uses 0.10 rad eased steps and eased returns, one
+joint at a time, from the measured pose; it makes no move to the distant reset
+pose and omits the shoulder sine. It checks driver joint limits, and aborts and
+holds if any joint exceeds 3 rad/s or tracking error exceeds 0.25 rad. Support
+the arm when its driver closes and torque drops. The older reset-pose protocol
+remains available without `--start-at-current` and refuses an automatic reset
+move over 0.15 rad on any joint.
 
 ```bash
 git clone https://github.com/UjaanRakshit/labgen ~/labgen || git -C ~/labgen pull
+set -o pipefail
 DAY=~/labgen/data/lab/$(date +%F); mkdir -p "$DAY"; cp -n ~/labgen/data/lab/TEMPLATE.md "$DAY/README.md"
-# the lab teleop checkout -- its AGENTS.md says /home/nico/yam_teleop; find it rather than assume
+# find the checkout; the Jetson uses /home/pair/pair-mse/yam_teleop
 TELEOP=$(dirname "$(dirname "$(find ~ -maxdepth 4 -path '*/deployment/quest_teleop.py' 2>/dev/null | head -1)")")
 cd "$TELEOP" && echo "teleop checkout: $TELEOP"
-.venv/bin/pip show i2rt | tee "$DAY/i2rt_version.txt"      # the sim's gains come from i2rt 1.1.2
-.venv/bin/python -m deployment.preflight --config deployment/config.yaml     --second-config deployment/config_left.yaml | tee "$DAY/preflight.txt"      # nothing energizes
-.venv/bin/python ~/labgen/scripts/sim2real_record.py --out "$DAY/i2rt_sim.npz" | tee "$DAY/dry_run.txt"
+TPY="$TELEOP/.conda-env/bin/python"; [ -x "$TPY" ] || TPY="$TELEOP/.venv/bin/python"
+"$TPY" -m pip show i2rt | tee "$DAY/i2rt_version.txt"      # the sim's gains come from i2rt 1.1.2
+"$TPY" -m deployment.preflight --config deployment/config.yaml     --second-config deployment/config_left.yaml | tee "$DAY/preflight.txt"      # nothing energizes; must pass before a real run
+"$TPY" ~/labgen/scripts/sim2real_record.py --out "$DAY/i2rt_sim.npz" | tee "$DAY/dry_run.txt"
 # ONLY after the owner confirms: person at the e-stop, workspace clear, teleop stopped
-.venv/bin/python ~/labgen/scripts/sim2real_record.py --backend real --teleop-config deployment/config.yaml     --i-have-cleared-the-workspace --out "$DAY/real_right.npz" | tee "$DAY/real_right.txt"
-.venv/bin/python ~/labgen/scripts/sim2real_record.py --backend real --teleop-config deployment/config_left.yaml     --i-have-cleared-the-workspace --out "$DAY/real_left.npz" | tee "$DAY/real_left.txt"
+"$TPY" ~/labgen/scripts/sim2real_record.py --backend real --teleop-config deployment/config.yaml     --i-have-cleared-the-workspace --start-at-current --out "$DAY/real_right.npz" | tee "$DAY/real_right.txt"
+"$TPY" ~/labgen/scripts/sim2real_record.py --backend real --teleop-config deployment/config_left.yaml     --i-have-cleared-the-workspace --start-at-current --out "$DAY/real_left.npz" | tee "$DAY/real_left.txt"
 ```
 
-Each real run is ~25 s. Then compare each against the sim's prediction (needs
-only numpy; the teleop venv has it). It exits 1 when they disagree -- expected,
-nothing has been tuned against a real log yet; the numbers are the point:
+Each current-pose run is ~20 s. Its measured starting angles are stored in the
+`.npz`, so the old `data/sim2real/newton_prediction.npz` is **not comparable**.
+On the Isaac Lab machine, with these logs copied into the same `DAY` folder,
+run Newton once per arm using the log's exact protocol and start pose:
 
 ```bash
+PY=~/IsaacLab/.venv/bin/python
+YAM_URDF=~/i2rt/i2rt/robot_models/arm/yam/v1/yam.urdf
 for arm in right left; do
-  .venv/bin/python ~/labgen/scripts/sim2real_compare.py "$DAY/real_$arm.npz"       ~/labgen/data/sim2real/newton_prediction.npz | tee "$DAY/compare_$arm.txt"
+  "$PY" ~/labgen/scripts/sim2real_newton.py "$YAM_URDF" --protocol-log "$DAY/real_$arm.npz" --out "$DAY/newton_$arm.npz"
+  "$PY" ~/labgen/scripts/sim2real_compare.py "$DAY/real_$arm.npz" "$DAY/newton_$arm.npz" | tee "$DAY/compare_$arm.txt"
 done
 ```
 

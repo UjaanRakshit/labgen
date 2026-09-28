@@ -33,6 +33,7 @@ __all__ = [
     "Segment",
     "Protocol",
     "default_protocol",
+    "current_pose_protocol",
     "Log",
     "StepMetrics",
     "step_metrics",
@@ -56,6 +57,7 @@ class Segment:
       hold  stay at `base` for `seconds`
       step  ease from `base` to `base + amplitude * e_joint` over `ease_s`, then
             hold there for the rest of `seconds`
+      return  ease from `base + amplitude * e_joint` back to `base`
       sine  `base + amplitude * sin(2 pi freq t) * e_joint` for `seconds`
     """
 
@@ -68,7 +70,7 @@ class Segment:
     label: str = ""
 
     def __post_init__(self) -> None:
-        if self.kind not in ("hold", "step", "sine"):
+        if self.kind not in ("hold", "step", "return", "sine"):
             raise ValueError(f"unknown segment kind {self.kind!r}")
         if self.seconds <= 0:
             raise ValueError("a segment must last some time")
@@ -107,6 +109,10 @@ class Protocol:
                     u = min(t / s.ease_s, 1.0) if s.ease_s > 0 else 1.0
                     ease = u * u * (3.0 - 2.0 * u)
                     q[s.joint] += s.amplitude * ease
+                elif s.kind == "return":
+                    u = min(t / s.ease_s, 1.0) if s.ease_s > 0 else 1.0
+                    ease = u * u * (3.0 - 2.0 * u)
+                    q[s.joint] += s.amplitude * (1.0 - ease)
                 elif s.kind == "sine":
                     q[s.joint] += s.amplitude * math.sin(2 * math.pi * s.freq_hz * t)
                 rows.append(q)
@@ -139,6 +145,27 @@ def default_protocol(amplitude: float = 0.10) -> Protocol:
                         label="j2 sine 0.08 rad 0.5 Hz"))
     segs.append(Segment("hold", 1.0, label="final settle"))
     return Protocol(segments=segs)
+
+
+def current_pose_protocol(base, amplitude: float = 0.10) -> Protocol:
+    """One eased positive step and eased return per joint, from a measured pose.
+
+    The protocol omits the shoulder sine because a folded arm can start near
+    the lower joint limit; a sine about that pose would command past the limit.
+    """
+    q = np.asarray(base, dtype=float).reshape(-1)
+    if q.shape != (6,) or not np.all(np.isfinite(q)):
+        raise ValueError("current-pose protocol needs six finite joint angles")
+    if not 0.0 < amplitude <= 0.10:
+        raise ValueError("current-pose amplitude must be positive and at most 0.10 rad")
+    segs = [Segment("hold", 1.0, label="hold measured start")]
+    for j in range(6):
+        segs.append(Segment("step", 1.5, joint=j, amplitude=amplitude,
+                            ease_s=0.10, label=f"j{j + 1} eased step"))
+        segs.append(Segment("return", 1.5, joint=j, amplitude=amplitude,
+                            ease_s=0.10, label=f"j{j + 1} eased return"))
+    segs.append(Segment("hold", 1.0, label="hold measured start again"))
+    return Protocol(base=tuple(float(x) for x in q), segments=segs)
 
 
 @dataclass

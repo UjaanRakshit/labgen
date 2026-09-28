@@ -16,7 +16,8 @@ import numpy as np
 import pytest
 
 from labgen.sim2real import (CONTROL_HZ, RESET_POSE_RAD, Log, Protocol, Segment,
-                             compare, default_protocol, step_metrics)
+                             compare, current_pose_protocol, default_protocol,
+                             step_metrics)
 
 
 def first_order_log(protocol: Protocol, tau_s: float, source: str,
@@ -76,6 +77,24 @@ def test_steps_are_eased_not_jumped():
     d = np.diff(q_cmd[:, 2])
     assert d.max() < 0.1, "the whole step must not happen in one tick"
     assert q_cmd[-1, 2] - q_cmd[0, 2] == pytest.approx(0.1)
+
+
+def test_current_pose_steps_return_smoothly_to_the_measured_start():
+    base = np.array([-0.05, 0.0, 0.0, -0.08, 0.0, 0.0])
+    p = current_pose_protocol(base)
+    commands, _ = p.commands()
+    assert commands[0] == pytest.approx(base)
+    assert commands[-1] == pytest.approx(base)
+    assert np.max(commands - base, axis=0) == pytest.approx(np.full(6, 0.10))
+    assert np.min(commands - base) >= -1e-12
+    assert np.max(np.abs(np.diff(commands, axis=0))) < 0.02
+    assert all(s.kind != "sine" for s in p.segments)
+
+
+def test_current_pose_protocol_refuses_a_large_or_negative_step():
+    for amplitude in (-0.1, 0.0, 0.11):
+        with pytest.raises(ValueError, match="amplitude"):
+            current_pose_protocol(np.zeros(6), amplitude)
 
 
 def test_the_protocol_round_trips_through_json():

@@ -1,0 +1,10 @@
+Name: i2rt
+Version: 1.1.2
+Summary: i2rt code base
+Home-page:
+Author:
+Author-email:
+License:
+Location: /home/pair/pair-mse/yam_teleop/.conda-env/lib/python3.13/site-packages
+Requires: click, crcmod-plus, dm-env, mcap-ros2-support, mink, mujoco, numpy, portal, pydantic, pygame, pyserial, python-can, pyyaml, qpsolvers, rerun-sdk, ruckig, threadpoolctl, tyro, viser
+Required-by:

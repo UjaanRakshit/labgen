@@ -32,10 +32,10 @@ import newton
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from arm_drive import configure_real_drives, gravity_torques              # noqa: E402
 from grasp import GraspFK, N_ARM, set_state, with_fingers                  # noqa: E402
-sys.path.insert(0, "/mnt/c/Ujaan Docx/Research/labgen")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from labgen.control import YAM_JAWS                                        # noqa: E402
 from labgen.hardware import YAM_V1                                          # noqa: E402
-from labgen.sim2real import CONTROL_HZ, RESET_POSE_RAD, Log, default_protocol  # noqa: E402
+from labgen.sim2real import CONTROL_HZ, Log, default_protocol  # noqa: E402
 
 PHYS_DT = 1.0 / 1000.0          # 10 physics steps per 100 Hz control tick
 
@@ -45,6 +45,8 @@ def main() -> int:
     ap.add_argument("urdf", type=Path)
     ap.add_argument("--out", required=True)
     ap.add_argument("--amplitude", type=float, default=0.10)
+    ap.add_argument("--protocol-log", type=Path,
+                    help="use the exact recorded protocol and start pose from a real-arm .npz")
     ap.add_argument("--no-friction", action="store_true",
                     help="drop Coulomb friction, to see how much of the result it explains")
     args = ap.parse_args()
@@ -69,13 +71,16 @@ def main() -> int:
     coms = np.asarray(arm.body_com, float)
     off = model.body_count - len(masses)
 
-    protocol = default_protocol(args.amplitude)
+    protocol = (Log.load(args.protocol_log).protocol if args.protocol_log
+                else default_protocol(args.amplitude))
+    if protocol.hz != CONTROL_HZ:
+        raise ValueError(f"protocol rate {protocol.hz} Hz differs from {CONTROL_HZ} Hz")
     q_cmd, seg = protocol.commands()
     n = len(q_cmd)
 
     s0, s1 = model.state(), model.state()
     control = model.control()
-    q0 = with_fingers(np.asarray(RESET_POSE_RAD), YAM_JAWS.q_closed)
+    q0 = with_fingers(np.asarray(protocol.base), YAM_JAWS.q_closed)
     set_state(model, s0, q0)
     set_state(model, s1, q0)
     solver = newton.solvers.SolverMuJoCo(model, iterations=20, ls_iterations=20)

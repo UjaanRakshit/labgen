@@ -1,0 +1,4 @@
+robot: SimRobot  source=i2rt-sim (KINEMATIC: teleports, no dynamics)
+moving to the rig's reset pose over 4 s ...
+ran 2100 ticks in 21.0 s; tick jitter p99 0.84 ms
+wrote /home/pair/labgen/data/lab/2026-09-28/i2rt_sim.npz

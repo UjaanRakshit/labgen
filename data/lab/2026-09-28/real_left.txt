@@ -1,0 +1,21 @@
+teleop config deployment/config_left.yaml: can_left, gripper linear_4310, adapter 0044002C594E501820313332 verified, saved gripper limits loaded, recorder bus locked
+initializing motorchain robot, gripper_limits: [6.38227665 1.07175555], enable_gripper_calibration: False
+robot: MotorChainRobot  source=real-can_left
+starting from the measured pose; no move to reset or shoulder sine
+segment 1/14: hold measured start
+segment 2/14: j1 eased step
+segment 3/14: j1 eased return
+segment 4/14: j2 eased step
+segment 5/14: j2 eased return
+segment 6/14: j3 eased step
+segment 7/14: j3 eased return
+segment 8/14: j4 eased step
+segment 9/14: j4 eased return
+segment 10/14: j5 eased step
+segment 11/14: j5 eased return
+segment 12/14: j6 eased step
+segment 13/14: j6 eased return
+segment 14/14: hold measured start again
+ran 2000 ticks in 20.0 s; tick jitter p99 4.61 ms
+wrote /home/pair/labgen/data/lab/2026-09-28/real_left.npz
+Robot closed with all torques set to zero.
