@@ -1,0 +1,19 @@
+sim-to-real comparison: real-can_right  vs  newton-sim
+joint  RMS diff  max diff  track real-can  track newton-s
+   j1    0.410d    1.674d         0.571d         0.291d
+   j2    0.495d    1.894d         0.641d         0.301d
+   j3    0.602d    2.531d         0.715d         0.354d
+   j4    0.679d    1.958d         0.860d         0.532d
+   j5    0.486d    1.382d         0.733d         0.487d
+   j6    0.320d    1.134d         0.622d         0.478d
+
+  step          rise ms      overshoot %        settle ms       steady deg
+       real-ca  newton- real-ca  newton- real-ca  newton- real-ca  newton-
+    j1     140      140     0.0      0.0    1490      810   0.462    0.045
+    j2     120      140     5.7      0.0    1490      850   0.303    0.058
+    j3     nan      130     0.0      4.7    1490      890   1.052    0.049
+    j4     nan      430     0.0      0.0    1490     1420   2.058    0.103
+    j5     nan      450     0.0      0.0    1490     1110   1.424    0.043
+    j6     nan      390     0.0      0.0    1490      750   1.074    0.002
+
+worst RMS difference 0.679 deg against a 0.500 deg tolerance -- DISAGREE

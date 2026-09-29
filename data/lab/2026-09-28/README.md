@@ -63,23 +63,71 @@ ticks in 20.0 s and closed with torque off. Its peak measured speed was 0.8718
 rad/s. `left_metrics.txt` shows that left joints 3–6 also did not reach 90% of
 their targets within 1.5 s.
 
-`sim2real_compare.py` output, right arm:
+`sim2real_compare.py` output, right arm (Newton run on the sim machine,
+2026-09-29, `--protocol-log real_right.npz`, i.e. this recording's exact start
+pose and protocol; `newton_right.npz`):
 
 ```
-Pending a Newton run with this recording's exact start pose and protocol. The
-old data/sim2real/newton_prediction.npz is not comparable.
+sim-to-real comparison: real-can_right  vs  newton-sim
+joint  RMS diff  max diff  track real-can  track newton-s
+   j1    0.410d    1.674d         0.571d         0.291d
+   j2    0.495d    1.894d         0.641d         0.301d
+   j3    0.602d    2.531d         0.715d         0.354d
+   j4    0.679d    1.958d         0.860d         0.532d
+   j5    0.486d    1.382d         0.733d         0.487d
+   j6    0.320d    1.134d         0.622d         0.478d
+
+  step          rise ms      overshoot %        settle ms       steady deg
+       real-ca  newton- real-ca  newton- real-ca  newton- real-ca  newton-
+    j1     140      140     0.0      0.0    1490      810   0.462    0.045
+    j2     120      140     5.7      0.0    1490      850   0.303    0.058
+    j3     nan      130     0.0      4.7    1490      890   1.052    0.049
+    j4     nan      430     0.0      0.0    1490     1420   2.058    0.103
+    j5     nan      450     0.0      0.0    1490     1110   1.424    0.043
+    j6     nan      390     0.0      0.0    1490      750   1.074    0.002
+
+worst RMS difference 0.679 deg against a 0.500 deg tolerance -- DISAGREE
 ```
 
-`sim2real_compare.py` output, left arm:
+`sim2real_compare.py` output, left arm (Newton run on the sim machine,
+2026-09-29, `--protocol-log real_left.npz`, i.e. this recording's exact start
+pose and protocol; `newton_left.npz`):
 
 ```
-Pending a Newton run with this recording's exact start pose and protocol. The
-old data/sim2real/newton_prediction.npz is not comparable.
+sim-to-real comparison: real-can_left  vs  newton-sim
+joint  RMS diff  max diff  track real-can  track newton-s
+   j1    0.256d    1.599d         0.467d         0.291d
+   j2    0.502d    2.024d         0.660d         0.302d
+   j3    0.553d    2.854d         0.697d         0.363d
+   j4    0.935d    2.594d         1.077d         0.533d
+   j5    0.492d    1.514d         0.753d         0.487d
+   j6    0.352d    1.004d         0.646d         0.478d
+
+  step          rise ms      overshoot %        settle ms       steady deg
+       real-ca  newton- real-ca  newton- real-ca  newton- real-ca  newton-
+    j1     120      140     0.0      0.0    1490      810   0.309    0.045
+    j2     110      140     4.9      0.0    1490      870   0.281    0.060
+    j3     nan      130     0.0      4.6    1490      880   1.620    0.048
+    j4     nan      430     0.0      0.0    1490     1410   2.691    0.100
+    j5     nan      450     0.0      0.0    1490     1110   1.555    0.042
+    j6     nan      390     0.0      0.0    1490      750   0.943    0.002
+
+worst RMS difference 0.935 deg against a 0.500 deg tolerance -- DISAGREE
 ```
 
-This Jetson teleop environment has no `newton`, `warp`, or `isaaclab` package.
-On the sim machine, run `scripts/sim2real_newton.py` separately with
-`--protocol-log` pointing to each real `.npz`, then compare the matching logs.
+### Reading the comparison (sim machine, 2026-09-29)
+
+- Shoulder timing matches: j1/j2 rise 110-140 ms real vs 140 ms sim.
+- The real arm does not reach its targets. Steady error real 0.28-2.69 deg vs
+  sim 0.002-0.10 deg; j3-j6 never reach 90 % within 1.5 s on either arm.
+- It is hysteresis, not an offset: every step undershoots AND every return
+  stops short on the other side (final q - base is positive on all joints, both
+  arms). A gravity-compensation error would offset one way; lagging both ways is
+  joint friction. So the real joints carry far more friction than the sim's
+  Coulomb terms (0.3 N.m j1-3, 0.06 N.m j4-6, i2rt 1.1.2 config).
+- Rough implied friction, steady error x kp, from ONE protocol at ONE (folded)
+  pose, so an estimate, not a fit: j1 0.4-0.6, j2 ~0.4, j3 1.5-2.3 N.m (kp 80);
+  j4 0.36-0.47, j5 0.25-0.27, j6 0.17-0.19 N.m (kp 10).
 
 ## 3. Measurements
 
