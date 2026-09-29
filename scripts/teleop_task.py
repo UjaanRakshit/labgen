@@ -7,8 +7,8 @@ at 20 Hz and demos are recorded as HDF5 -- built from our own parts:
 
   input      labgen.devices.TcpPoseSource from scripts/teleop_touch.py (any
              phone) or teleop_bridge.py (WebXR), unchanged
-  anchoring  labgen.devices.RelativeRetargeter, one per arm; hand "left"
-             drives robot0, "right" robot1
+  anchoring  labgen.devices.RelativeRetargeter, one per arm; hand "right"
+             drives robot0 (the right arm), "left" robot1
   action     each tick: (retargeted target - MEASURED grasp point), in that
              arm's base frame, clipped to MAX_SPEED -- so the loop closes on
              where the hand actually is and the soft real gains cannot make
@@ -76,16 +76,18 @@ TASK = TASKS[args.task]
 MAX_SPEED_M_S = 0.25            # grasp point speed cap per tick
 MAX_TURN_RAD = 0.10             # per-tick orientation correction cap
 DOWN = np.array([0.0, 0.0, -1.0])
-LOOK_AT = np.array([0.05, 0.35, 0.12])
-EYE = LOOK_AT + np.array([1.05, 0.05, 0.70])
+# Behind and above the two arms, looking forward (+x) -- where the operator stands,
+# so 'drag up the screen' is 'away from me' and the left arm is on the left.
+LOOK_AT = np.array([0.35, 0.325, 0.05])
+EYE = np.array([-0.75, 0.325, 0.85])
 # Teleop convenience, not a physical claim: keep the grasp point over the bench
 # and above its surface so a slip of the thumb cannot drive a finger into it.
 BENCH_BOX = Workspace(lower_m=(-0.45, -0.05, 0.005), upper_m=(0.45, 0.75, 0.45))
-HANDS = {"left": 0, "right": 1}
+HANDS = {"right": 0, "left": 1}    # robot0 = right arm, robot1 = left arm (measured layout)
 UNVERIFIED = [
     "finger pads (size, friction): measured off the URDF mesh, not calipered",
     f"grip force cap {B.GRIP_FORCE_N} N and finger PD gains: controller choices",
-    f"robot1 placement {B.ROBOT1_POS}: PLACEHOLDER, rig not measured",
+    f"object layout on the bench: hand-authored PLACEHOLDER (arm layout measured 2026-09-28)",
     "scene object dimensions: see the SceneSpec's unsourced list",
     "gravity compensation 1.0 (real controller uses 1.1-1.2 on j2-j4)",
 ]
@@ -200,8 +202,8 @@ def main() -> int:
         started = last_report = time.perf_counter()
         next_tick = started
         step_ms, window = 0.0, 0
-        print(f"ready at {hz:.0f} Hz. ENGAGE on the phone to drive (LEFT = robot0, "
-              f"RIGHT = robot1); SAVE DEMO / DISCARD end the episode.")
+        print(f"ready at {hz:.0f} Hz. ENGAGE on the phone to drive (RIGHT = right arm/robot0, "
+              f"LEFT = left arm/robot1); SAVE DEMO / DISCARD end the episode.")
         try:
             while not (args.seconds and time.perf_counter() - started > args.seconds):
                 ev = source.poll_latest()

@@ -17,7 +17,8 @@ What is the real robot's, and what is not:
                gripper slewed at one full range per second
   gripper      pad boxes of labgen.control.YAM_PAD, UNVERIFIED; its PD gains are
                a controller choice, force capped at GRIP_FORCE_N
-  second arm   placement is a PLACEHOLDER until the rig is measured
+  arm layout   MEASURED (ruler, lab, 2026-09-28): robot0 = right arm at the origin,
+               robot1 = left arm 650 mm to its left (+y), both facing +x
   physics      Isaac Lab's own Newton/MuJoCo-Warp grasping preset (the stack
                task's): elliptic cone, impratio 10 -- the fix for MuJoCo's
                friction creep that the grasp acceptance measured
@@ -94,10 +95,12 @@ TELEOP_MAX_COMMAND_OFFSET_RAD = 0.25      # target never further than this from 
 TELEOP_MAX_COMMAND_VELOCITY_RAD_S = 1.5   # commanded joint angle change per second
 TELEOP_GRIPPER_RATE_PER_S = 1.0           # opening command, full ranges per second (~0.047 m/s/finger)
 
-# PLACEHOLDER: the second arm across the bench, facing the first. Same value
-# scripts/teleop_sim.py uses. Replace with the measured base-to-base offset.
-ROBOT1_POS = (0.0, 0.70, 0.0)
-ROBOT1_ROT_XYZW = (0.0, 0.0, 1.0, 0.0)          # yaw 180 deg; Isaac Lab 3.0 is xyzw
+# The left arm, measured at the lab (data/lab/2026-09-28/README.md, ruler, centre
+# to centre): 650 mm to the LEFT of the right arm, same forward position and
+# height, facing the same way. The YAM faces +x, so left is +y. Replaces a
+# placeholder that had it 0.70 m across the bench, turned to face the first.
+ROBOT1_POS = (0.0, 0.65, 0.0)
+ROBOT1_ROT_XYZW = (0.0, 0.0, 0.0, 1.0)          # same heading; Isaac Lab 3.0 is xyzw
 
 # Fully open = just inside the URDF finger limit (joint7/8 lower = -0.04695 m).
 # YAM_JAWS.q_open rounds it to -0.047, 0.05 mm past the limit, which Isaac Lab
@@ -357,5 +360,6 @@ class BenchYamIkRelEnvCfg(ManagerBasedRLEnvCfg):
             num_substeps=20,
             debug_mode=False,
         )
-        self.viewer.eye = (1.2, -0.6, 0.9)
-        self.viewer.lookat = (0.0, 0.35, 0.05)
+        # Behind and above the arms, looking forward along +x: the operator's view.
+        self.viewer.eye = (-0.75, 0.325, 0.85)
+        self.viewer.lookat = (0.35, 0.325, 0.05)

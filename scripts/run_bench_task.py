@@ -102,7 +102,7 @@ def main() -> int:
         start = {n: pose(n) for n in OBJECTS}
         eef0 = [pol["robot0_eef_pos"][0].clone(), pol["robot1_eef_pos"][0].clone()]
         print(f"robot1 base quat (wxyz) {pol['robot1_base_ori'][0].tolist()}  "
-              f"-- expect ~(0,0,0,1) for the 180 deg yaw")
+              f"-- expect (1,0,0,0): same heading as robot0 (measured layout)")
         import time
         t0 = time.perf_counter()
         for _ in range(2 * steps_per_s):
@@ -190,7 +190,8 @@ def main() -> int:
               f"(need <=5) -> {'PASS' if ok else 'FAIL'}")
 
         # ---- robot1 answers its own half of the action, in its own base frame ----
-        # +x in robot1's base frame is -x in the world (it is yawed 180 deg).
+        # robot1 (the left arm) faces the same way as robot0, so +x in its base
+        # frame is +x in the world.
         p1 = pol["robot1_eef_pos"][0].clone()
         for _ in range(3 * steps_per_s):
             a = act((0, 0, 0), (0, 0, 0), -1.0)            # robot0 keeps holding
@@ -199,7 +200,7 @@ def main() -> int:
             pol = obs["policy"]
         d = (pol["robot1_eef_pos"][0] - p1).tolist()
         print(f"ROBOT1: commanded +x,+z in its base frame; grasp point moved world "
-              f"{[round(v*1000,1) for v in d]} mm (expect x<0, z>0, y~0)")
+              f"{[round(v*1000,1) for v in d]} mm (expect x>0, z>0, y~0)")
         env.close()
     return 0
 

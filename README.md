@@ -124,7 +124,7 @@ python scripts/teleop_touch.py                               # prints the URL to
 $PY scripts/teleop_task.py --task vial --stream --out demos/vial_real.hdf5
 ```
 
-Choose LEFT on the phone (robot0, next to the vial), ENGAGE, drag to move, slider
+Choose RIGHT on the phone (the right arm, robot0, which does the vial task), ENGAGE, drag to move, slider
 to grip. Completing the task (vial onto the hotplate, released, back onto the
 bench) saves the demo and resets; SAVE DEMO / DISCARD override. Demos are recorded
 already annotated for MimicGen.
@@ -163,7 +163,7 @@ relative IK (real: mink QP on an absolute target); no One Euro filter.
 
 **Unverified**, and every recorded dataset says so in its attributes: finger pad
 size and friction (URDF mesh, not calipers), finger PD gains and the 25 N grip
-cap, the second arm's placement (PLACEHOLDER), the vial's neck and the
+cap, the bench object layout (PLACEHOLDER; the two arms' layout is measured), the vial's neck and the
 hotplate's dimensions (catalog TODOs), and gravity-comp factor (real 1.1–1.2 on
 j2–j4, sim 1.0). No real-arm log has been compared yet.
 

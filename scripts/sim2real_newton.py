@@ -47,6 +47,7 @@ def main() -> int:
     ap.add_argument("--amplitude", type=float, default=0.10)
     ap.add_argument("--protocol-log", type=Path,
                     help="use the exact recorded protocol and start pose from a real-arm .npz")
+    ap.add_argument("--friction", help="override Coulomb friction, six comma-separated N.m (j1..j6)")
     ap.add_argument("--no-friction", action="store_true",
                     help="drop Coulomb friction, to see how much of the result it explains")
     args = ap.parse_args()
@@ -60,6 +61,12 @@ def main() -> int:
     b.add_builder(arm)
     dofs = slice(0, b.joint_dof_count)
     configure_real_drives(b, YAM_V1, dof_slice=dofs, n_fingers=2, verbose=True)
+    if args.friction:
+        fr = [float(x) for x in args.friction.split(",")]
+        if len(fr) != 6:
+            raise SystemExit("--friction needs six values")
+        for k, i in enumerate(range(dofs.start, dofs.start + 6)):
+            b.joint_friction[i] = fr[k]
     if args.no_friction:
         for i in range(N_ARM):
             b.joint_friction[i] = 0.0
@@ -112,7 +119,7 @@ def main() -> int:
         # quantity the real robot reports as joint_eff.
         eff[k] = np.clip(kp * (q_cmd[k] - jq) - kd * jqd, -tmax, tmax) + g
 
-    source = "newton-sim" + (" (no friction)" if args.no_friction else "")
+    source = "newton-sim" + (" (no friction)" if args.no_friction else "") +         (f" (friction {args.friction})" if args.friction else "")
     Log(t=np.arange(n) / CONTROL_HZ, q_cmd=q_cmd, q=q, qd=qd, eff=eff,
         segment=seg, source=source, protocol_json=protocol.to_json()).save(args.out)
     print(f"wrote {args.out}: {n} ticks, worst |q - q_cmd| "

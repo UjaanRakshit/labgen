@@ -94,8 +94,8 @@ PAGE = """<!doctype html>
     <div id="zstrip">Z</div>
   </div>
   <div class="row">
-    <button id="armL" class="btn sm on">LEFT</button>
-    <button id="armR" class="btn sm">RIGHT</button>
+    <button id="armL" class="btn sm">LEFT</button>
+    <button id="armR" class="btn sm on">RIGHT</button>
     <button id="rec" class="btn sm">RECENTRE</button>
   </div>
   <div class="row"><input id="grip" type="range" min="0" max="100" value="0"></div>
@@ -116,7 +116,7 @@ const armL=document.getElementById('armL'), armR=document.getElementById('armR')
 // each; the sim routes on the `hand` field and neither device knows the other
 // exists. A single phone can also switch, which is how one person tests a
 // bimanual scene alone.
-let hand = new URLSearchParams(location.search).get('hand') || 'left';
+let hand = new URLSearchParams(location.search).get('hand') || 'right';   // right arm = robot0, the one the vial task uses
 function setHand(h){
   hand = h;
   armL.classList.toggle('on', h === 'left');

@@ -29,8 +29,19 @@ sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
 # The YAM's sampled workspace reaches 0.74 m from the base, and its home pose
 # puts the gripper at 0.21 m. An arc at 0.40-0.46 m is comfortably inside that
 # and comfortably outside the arm's own body at home.
+# FRAME FIX, 2026-09-29. The YAM faces +x at joint1 = 0 (its grasp point is at
+# x = +0.45 m in the rig's reset pose). The first layout measured angles from +y
+# and so put the whole bench 90 deg to the robot's LEFT; the sim arm reached it
+# by swinging joint 1 and nothing flagged it. Angles are now from +x, the
+# robot's forward, positive toward +y (its left) -- the same arc, rotated to be
+# in front. The layout itself is still hand-authored: a PLACEHOLDER until the
+# real bench is photographed or registered.
+#
+# The rig (measured with a ruler at the lab, 2026-09-28): two YAMs side by side,
+# facing the same way; the left base 650 mm to the left (+y) of the right base.
+# The right arm is the origin (robot0). The bench spans both bases.
 LAYOUT = [
-    # instance,    catalog key,          angle deg from +y,  radius m
+    # instance,    catalog key,          angle deg (0 = +y before the fix; see mapping),  radius m
     ("hotplate",   "hotplate_stirrer",   -52.0, 0.46),
     ("petri",      "petri_dish_100",     -24.0, 0.43),
     ("test_tube",  "test_tube_16x100",     4.0, 0.42),
@@ -42,13 +53,14 @@ LAYOUT = [
 # the worktop far enough forward that the whole footprint is supported --
 # with 0.36 the base plate overhung the near edge and the arm appeared to be
 # bolted to thin air.
-BENCH_CENTRE_Y = 0.26
+BENCH_CENTRE = (0.175, 0.325)    # long side along y: covers both bases (y 0 and 0.65) and the arc
+BENCH_YAW_WXYZ = [0.7071068, 0.0, 0.0, 0.7071068]   # 90 deg: the 1.5 m side runs along y
 
 objects = [{
     "instance_id": "bench",
     "catalog_key": "bench_top",
-    "position": [0.0, BENCH_CENTRE_Y, -CATALOG["bench_top"].dims["z"]],
-    "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+    "position": [BENCH_CENTRE[0], BENCH_CENTRE[1], -CATALOG["bench_top"].dims["z"]],
+    "orientation_wxyz": BENCH_YAW_WXYZ,
     "fixed": True,
     "confidence": 1.0,
     "provenance": "manual",
@@ -60,8 +72,10 @@ objects = [{
 
 for name, key, deg, radius in LAYOUT:
     rad = math.radians(deg)
-    x = radius * math.sin(rad)
-    y = radius * math.cos(rad)
+    # old (angle from +y): x = r sin a, y = r cos a. Rotated -90 deg about z so
+    # the arc is in front (+x): x = r cos a, y = -r sin a.
+    x = radius * math.cos(rad)
+    y = -radius * math.sin(rad)
     objects.append({
         "instance_id": name,
         "catalog_key": key,
@@ -88,8 +102,10 @@ scene = {
         "marker_config": "not_applicable_hand_authored",
         "video": "none",
         "git_sha": sha,
-        "frame_convention": ("Robot base at the origin, worktop surface at z=0, "
-                             "bench extending in +y in front of the robot."),
+        "frame_convention": ("Right YAM base (robot0) at the origin facing +x; left YAM "
+                             "650 mm to its left (+y), facing +x (measured 2026-09-28); "
+                             "worktop surface at z=0, objects in front (+x). Object layout "
+                             "is a hand-authored PLACEHOLDER."),
     },
     "objects": objects,
 }
@@ -104,12 +120,8 @@ import itertools
 import numpy as np
 
 spec = SceneSpec.read(path)
-boxes = {}
-for o in spec.objects:
-    m = meshes.build(o.catalog_item())
-    lo, hi = m.bounds()
-    p = np.array(o.position)
-    boxes[o.instance_id] = (lo + p, hi + p)
+from labgen.validate import _aabb   # rotation-aware bounds (the bench is turned 90 deg)
+boxes = {o.instance_id: _aabb(o) for o in spec.objects}
 
 blo, bhi = boxes["bench"]
 print(f"\nworktop surface z = {bhi[2]:+.4f}")

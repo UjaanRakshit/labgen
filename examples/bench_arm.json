@@ -7,23 +7,23 @@
     "note": "Same catalog items as bench_5, re-arranged on an arc inside the YAM's reachable workspace. bench_5 predates the arm and puts objects inside its swept volume; it is left alone because it is the reference the physics tests measure against.",
     "marker_config": "not_applicable_hand_authored",
     "video": "none",
-    "git_sha": "c1a4e9026bd4bba8e67c2aba6935fb7a5ca544dd",
-    "frame_convention": "Robot base at the origin, worktop surface at z=0, bench extending in +y in front of the robot."
+    "git_sha": "2c796e318fe2fcc1f3a36db2b648cca3b63a0d22",
+    "frame_convention": "Right YAM base (robot0) at the origin facing +x; left YAM 650 mm to its left (+y), facing +x (measured 2026-09-28); worktop surface at z=0, objects in front (+x). Object layout is a hand-authored PLACEHOLDER."
   },
   "objects": [
     {
       "instance_id": "bench",
       "catalog_key": "bench_top",
       "position": [
-        0.0,
-        0.26,
+        0.175,
+        0.325,
         -0.04
       ],
       "orientation_wxyz": [
-        1.0,
+        0.7071068,
         0.0,
         0.0,
-        0.0
+        0.7071068
       ],
       "fixed": true,
       "confidence": 1.0,
@@ -35,8 +35,8 @@
       "instance_id": "hotplate",
       "catalog_key": "hotplate_stirrer",
       "position": [
-        -0.3625,
         0.2832,
+        0.3625,
         0.0
       ],
       "orientation_wxyz": [
@@ -55,8 +55,8 @@
       "instance_id": "petri",
       "catalog_key": "petri_dish_100",
       "position": [
-        -0.1749,
         0.3928,
+        0.1749,
         0.0
       ],
       "orientation_wxyz": [
@@ -75,8 +75,8 @@
       "instance_id": "test_tube",
       "catalog_key": "test_tube_16x100",
       "position": [
-        0.0293,
         0.419,
+        -0.0293,
         0.0
       ],
       "orientation_wxyz": [
@@ -95,8 +95,8 @@
       "instance_id": "beaker",
       "catalog_key": "beaker_250",
       "position": [
-        0.2,
         0.3464,
+        -0.2,
         0.0
       ],
       "orientation_wxyz": [

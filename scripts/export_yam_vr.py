@@ -28,8 +28,8 @@ Mapping (per arm group /left, /right):
                                    arm's base frame, quaternion xyzw -- NOT i2rt's
                                    end-effector site; recorded for reference only
 
-robot0 -> --robot0-hand (default left), robot1 -> the other. In the sim the
-second arm's placement is a PLACEHOLDER; say so before mixing with real data.
+robot0 -> --robot0-hand (default right: robot0 is the right arm, robot1 the left,
+as measured). The bench object layout is still a PLACEHOLDER.
 Runs anywhere with numpy and h5py.
 """
 from __future__ import annotations
@@ -110,7 +110,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dataset", help="labgen / Isaac Lab recorder HDF5 (data/demo_k)")
     ap.add_argument("out_dir")
-    ap.add_argument("--robot0-hand", default="left", choices=("left", "right"))
+    ap.add_argument("--robot0-hand", default="right", choices=("left", "right"))
     ap.add_argument("--successful-only", action="store_true", default=True)
     args = ap.parse_args()
     out_dir = Path(args.out_dir)
@@ -126,7 +126,7 @@ def main() -> int:
         meta = {"labgen_dataset": str(Path(args.dataset).name)}
         if "labgen_unverified" in f.attrs:
             meta["labgen_unverified"] = f.attrs["labgen_unverified"]
-        meta["labgen_note"] = "robot1 placement is a PLACEHOLDER in the sim; gripper opening from finger joints"
+        meta["labgen_note"] = "arm layout measured 2026-09-28; object layout is a PLACEHOLDER; gripper opening from finger joints"
         for name, demo in f["data"].items():
             if args.successful_only and not bool(demo.attrs.get("success", False)):
                 continue

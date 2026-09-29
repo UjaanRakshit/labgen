@@ -34,7 +34,7 @@ a = math.radians(VIAL_DEG)
 src["objects"].append({
     "instance_id": "vial",
     "catalog_key": "vial_20ml",
-    "position": [round(VIAL_R * math.sin(a), 4), round(VIAL_R * math.cos(a), 4), 0.0],
+    "position": [round(VIAL_R * math.cos(a), 4), round(-VIAL_R * math.sin(a), 4), 0.0],  # in front (+x); see make_bench_arm
     "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
     "fixed": False,
     "confidence": 1.0,

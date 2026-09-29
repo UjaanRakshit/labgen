@@ -167,15 +167,21 @@ SEALING_COLLIDERS = {"convex_hull", "convex_decomposition"}
 # --------------------------------------------------------------------------
 
 def _aabb(obj: SceneObject) -> tuple[np.ndarray, np.ndarray]:
-    """World-space axis-aligned bounds.
+    """World-space axis-aligned bounds of the object's mesh, rotation applied.
 
-    Only correct for axis-aligned objects. A rotated object gets flagged by
-    `check_scale` rather than silently measured wrong.
+    The vertices are rotated before the bounds are taken, so a rotated object's
+    box is exact for right-angle yaws and conservative (never too small) for
+    anything else. It used to ignore rotation, which made a bench turned 90 deg
+    report its objects as unsupported; `check_scale` still declines to measure
+    rotated objects against catalog dimensions.
     """
     mesh = build(obj.catalog_item())
-    lo, hi = mesh.bounds()
-    p = np.asarray(obj.position)
-    return lo + p, hi + p
+    w, x, y, z = obj.orientation_wxyz
+    R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                  [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                  [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    v = np.asarray(mesh.vertices, float) @ R.T + np.asarray(obj.position)
+    return v.min(axis=0), v.max(axis=0)
 
 
 def _is_axis_aligned(obj: SceneObject) -> bool:

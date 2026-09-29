@@ -279,3 +279,17 @@ def test_every_check_runs_on_the_reference_scene(scene):
         report = Report(scene=scene.name)
         check(scene, report, YAM)
         assert report.findings, f"{check.__name__} produced no findings at all"
+
+
+def test_a_rotated_support_still_supports_what_sits_on_it():
+    """A bench turned 90 deg: its bounds must rotate with it, or objects on the
+    part that only exists after rotation read as floating."""
+    import json
+    from pathlib import Path
+    from labgen.types import SceneSpec
+    from labgen.validate import validate
+    spec = SceneSpec.read(Path(__file__).resolve().parents[1] / "examples/bench_arm.json")
+    bench = spec.by_id("bench")
+    assert abs(bench.orientation_wxyz[0] - 1.0) > 1e-6, "fixture expects the rotated bench"
+    report = validate(spec)
+    assert not [f for f in report.findings if f.check == "support" and f.severity.name == "FAIL"]
