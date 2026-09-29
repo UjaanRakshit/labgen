@@ -48,6 +48,8 @@ def main() -> int:
     ap.add_argument("--protocol-log", type=Path,
                     help="use the exact recorded protocol and start pose from a real-arm .npz")
     ap.add_argument("--friction", help="override Coulomb friction, six comma-separated N.m (j1..j6)")
+    ap.add_argument("--friction-timeconst", type=float,
+                    help="MuJoCo solreffriction timeconst for the arm joints (default 0.02 s; >= 2*dt)")
     ap.add_argument("--no-friction", action="store_true",
                     help="drop Coulomb friction, to see how much of the result it explains")
     args = ap.parse_args()
@@ -70,6 +72,18 @@ def main() -> int:
     if args.no_friction:
         for i in range(N_ARM):
             b.joint_friction[i] = 0.0
+    if args.friction_timeconst:
+        # MuJoCo joint friction is a SOFT constraint (per-dof solreffriction,
+        # default timeconst 20 ms): it creeps, so a joint pushed by less than its
+        # friction still drifts to the target instead of sticking. Measured: with
+        # the friction the real arm implies, the sim stopped 0.37 deg short on j4
+        # then crept on, where the real joint held 2.06 deg short.
+        newton.solvers.SolverMuJoCo.register_custom_attributes(b)
+        attr = b.custom_attributes["mujoco:solreffriction"]
+        if attr.values is None:
+            attr.values = {}
+        for i in range(dofs.start, dofs.start + N_ARM):
+            attr.values[i] = wp.vec2(args.friction_timeconst, 1.0)
     model = b.finalize()
     coords = slice(0, model.joint_coord_count)
     fk = GraspFK(model, coords)
@@ -119,7 +133,7 @@ def main() -> int:
         # quantity the real robot reports as joint_eff.
         eff[k] = np.clip(kp * (q_cmd[k] - jq) - kd * jqd, -tmax, tmax) + g
 
-    source = "newton-sim" + (" (no friction)" if args.no_friction else "") +         (f" (friction {args.friction})" if args.friction else "")
+    source = "newton-sim" + (" (no friction)" if args.no_friction else "") +         (f" (friction {args.friction})" if args.friction else "") +         (f" (friction timeconst {args.friction_timeconst})" if args.friction_timeconst else "")
     Log(t=np.arange(n) / CONTROL_HZ, q_cmd=q_cmd, q=q, qd=qd, eff=eff,
         segment=seg, source=source, protocol_json=protocol.to_json()).save(args.out)
     print(f"wrote {args.out}: {n} ticks, worst |q - q_cmd| "

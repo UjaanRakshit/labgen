@@ -165,3 +165,31 @@ worst RMS difference 0.935 deg against a 0.500 deg tolerance -- DISAGREE
 - Number recorded / number that completed the task:
 - File:
 - What felt wrong driving it (lag, a direction backwards, the view):
+
+## 5. Fitting the sim to these logs (sim machine, 2026-09-29)
+
+Fit on the RIGHT arm, checked on the LEFT arm (held out).
+
+1. **Friction value alone does not help.** Sweeping one Coulomb value for all
+   joints from 0.06 to 2.5 N.m barely moved the RMS difference (e.g. j1
+   0.43 -> 0.38 deg, j6 flat at 0.31).
+2. **Latency is real but minor.** The real response lags the sim by 2-5 ticks
+   (20-50 ms) on every joint of both arms; shifting for it trims RMS only
+   slightly (j1 0.41 -> 0.39 deg). Not modelled yet.
+3. **The friction MODEL was wrong.** MuJoCo joint friction is a soft
+   constraint (per-dof `solreffriction`, default timeconst 20 ms): with the
+   friction the real arm implies, the sim stopped 0.37 deg short on j4 and then
+   crept to the target, where the real joint held 2.06 deg short. Stiffening it
+   to 2 ms (`sim2real_newton.py --friction-timeconst 0.002`) makes it stick.
+4. **Result**, per-joint friction from the right arm's steady error x kp
+   (0.64, 0.42, 1.5, 0.36, 0.25, 0.19 N.m) with the 2 ms timeconst:
+   - left (held out): worst RMS 0.935 -> **0.573 deg**; j1 0.26 -> 0.17,
+     j3 0.55 -> 0.34, j5 0.49 -> 0.26, j6 0.35 -> 0.22 deg
+   - right: worst RMS 0.679 -> 0.806 deg (j4 worse, others better)
+   - `compare_fit_right.txt`, `compare_fit_left.txt`
+5. **Still off:** j2 (real overshoots ~5 %, sim does not; j2 carries the most
+   gravity, and the real controller scales its gravity comp by 1.1 where the
+   sim uses 1.0), j4 on the right arm, and the 20-50 ms latency.
+
+These values come from one protocol at one folded pose. They are NOT yet in
+`labgen/hardware.py` or the Isaac Lab task.
