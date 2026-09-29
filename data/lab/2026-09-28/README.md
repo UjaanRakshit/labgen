@@ -186,7 +186,7 @@ Fit on the RIGHT arm, checked on the LEFT arm (held out).
    - left (held out): worst RMS 0.935 -> **0.573 deg**; j1 0.26 -> 0.17,
      j3 0.55 -> 0.34, j5 0.49 -> 0.26, j6 0.35 -> 0.22 deg
    - right: worst RMS 0.679 -> 0.806 deg (j4 worse, others better)
-   - `compare_fit_right.txt`, `compare_fit_left.txt`
+   - `compare_fit_right.txt`, `compare_fit_left.txt`; sim logs `newton_fit_*.npz`
 5. **Still off:** j2 (real overshoots ~5 %, sim does not; j2 carries the most
    gravity, and the real controller scales its gravity comp by 1.1 where the
    sim uses 1.0), j4 on the right arm, and the 20-50 ms latency.
