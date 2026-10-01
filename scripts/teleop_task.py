@@ -54,6 +54,9 @@ ap.add_argument("--view-height", type=int, default=540)
 ap.add_argument("--scale", type=float, default=1.0, help="device-to-hand motion scale")
 ap.add_argument("--out", default="demos/bench.hdf5")
 ap.add_argument("--seconds", type=float, default=0.0, help="stop after this long (0 = never)")
+ap.add_argument("--input", default="touch", choices=("touch", "cobalt"),
+                help="touch: scripts/teleop_touch.py (any phone, drag pad). cobalt: the COBALT "
+                     "phone app, unchanged, via scripts/cobalt_app_bridge.py -- 6-DoF, COBALT's mapping")
 ap.add_argument("--task", default="bench", choices=("bench", "vial"),
                 help="bench: free play. vial: pick the vial, set it on the hotplate, take "
                      "it off -- recorded already annotated for MimicGen, auto-saved on success")
@@ -116,6 +119,18 @@ def aim(viewer) -> None:
     viewer.set_camera(tuple(float(v) for v in EYE),
                       float(np.degrees(np.arctan2(d[2], np.hypot(d[0], d[1])))),
                       float(np.degrees(np.arctan2(d[1], d[0]))))
+
+
+def track_rotation(R_target: np.ndarray, R_hand: np.ndarray) -> np.ndarray:
+    """World-frame rotation vector from the gripper's orientation toward the target's, capped."""
+    R = R_target @ R_hand.T
+    c = (np.trace(R) - 1.0) / 2.0
+    v = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]]) / 2.0
+    s = float(np.linalg.norm(v))
+    ang = float(np.arctan2(s, c))
+    if s < 1e-9:
+        return np.zeros(3)
+    return v / s * min(ang, MAX_TURN_RAD)
 
 
 def point_down(R_hand: np.ndarray) -> np.ndarray:
@@ -181,10 +196,14 @@ def main() -> int:
         source = TcpPoseSource(host, args.port)
         print("connected.")
 
-        frame = screen_frame()
-        arms = [dict(ret=RelativeRetargeter(position_scale=args.scale, use_orientation=False,
-                                            frame=frame, workspace=BENCH_BOX),
-                     target=None, grip_closed=False, grip=0.0) for _ in range(2)]
+        if args.input == "cobalt":
+            # The bridge already applies COBALT's YAM mapping (robot frame, /1.5):
+            # no screen frame, and the phone's rotation is tracked, as in COBALT.
+            ret_kw = dict(position_scale=args.scale, use_orientation=True, frame=None)
+        else:
+            ret_kw = dict(position_scale=args.scale, use_orientation=False, frame=screen_frame())
+        arms = [dict(ret=RelativeRetargeter(workspace=BENCH_BOX, **ret_kw),
+                     target=None, target_R=None, grip_closed=False, grip=0.0) for _ in range(2)]
 
         viewer = sock = None
         if args.stream:
@@ -206,13 +225,13 @@ def main() -> int:
               f"LEFT = left arm/robot1); SAVE DEMO / DISCARD end the episode.")
         try:
             while not (args.seconds and time.perf_counter() - started > args.seconds):
-                ev = source.poll_latest()
+                events = source.poll_latest_by_hand()
                 if source.closed:
                     print("phone bridge closed the connection")
                     break
 
                 reset = None
-                if ev is not None:
+                for ev in events.values():
                     if last_cmd_seq is None:
                         last_cmd_seq = ev.command_seq      # ignore presses from before we joined
                     elif ev.command_seq != last_cmd_seq:
@@ -221,9 +240,12 @@ def main() -> int:
                     i = HANDS.get(ev.hand, 0)
                     arm = arms[i]
                     hand_now = pol[f"robot{i}_eef_pos"][0].cpu().numpy()
-                    tgt = arm["ret"].update(ev, hand_now)
-                    arm["target"] = None if not arm["ret"].engaged else (
-                        tgt.position_m if tgt is not None else arm["target"])
+                    hand_R = wxyz_to_R(pol[f"robot{i}_eef_quat"][0].cpu().numpy())
+                    tgt = arm["ret"].update(ev, hand_now, hand_R)
+                    if not arm["ret"].engaged:
+                        arm["target"], arm["target_R"] = None, None
+                    elif tgt is not None:
+                        arm["target"], arm["target_R"] = tgt.position_m, tgt.rotation
                     arm["grip_closed"] = ev.grip > 0.5
                     arm["grip"] = float(min(max(ev.grip, 0.0), 1.0))
 
@@ -243,7 +265,7 @@ def main() -> int:
                     pol = obs["policy"]
                     for arm in arms:
                         arm["ret"].release()
-                        arm["target"], arm["grip_closed"], arm["grip"] = None, False, 0.0
+                        arm["target"], arm["target_R"], arm["grip_closed"], arm["grip"] = None, None, False, 0.0
                     ticks = 0
                     continue
 
@@ -255,7 +277,9 @@ def main() -> int:
                         Rh = wxyz_to_R(pol[f"robot{i}_eef_quat"][0].cpu().numpy())
                         d = np.clip(np.asarray(arm["target"]) - p, -MAX_SPEED_M_S / hz, MAX_SPEED_M_S / hz)
                         a[0, 7 * i:7 * i + 3] = torch.as_tensor(Rb.T @ d / scale)
-                        a[0, 7 * i + 3:7 * i + 6] = torch.as_tensor(Rb.T @ point_down(Rh) / scale)
+                        rot = (track_rotation(arm["target_R"], Rh) if arm["target_R"] is not None
+                               and args.input == "cobalt" else point_down(Rh))
+                        a[0, 7 * i + 3:7 * i + 6] = torch.as_tensor(Rb.T @ rot / scale)
                     # Proportional, like the lab's trigger: slider 0 = open (+1), 1 = closed (-1).
                     a[0, 7 * i + 6] = 1.0 - 2.0 * arm["grip"]
 
@@ -266,10 +290,14 @@ def main() -> int:
                     # exported the episode and reset itself.
                     saved += 1
                     print(f"SUCCESS -> demo {saved} saved automatically ({ticks} steps) -> {out}")
+                    try:
+                        source.send({"event": "success"})     # the COBALT app is told 'complete'
+                    except OSError:
+                        pass
                     pol = obs["policy"]
                     for arm in arms:
                         arm["ret"].release()
-                        arm["target"], arm["grip_closed"], arm["grip"] = None, False, 0.0
+                        arm["target"], arm["target_R"], arm["grip_closed"], arm["grip"] = None, None, False, 0.0
                     ticks = 0
                     continue
                 step_ms += (time.perf_counter() - t0) * 1000

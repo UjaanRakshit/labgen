@@ -446,6 +446,48 @@ class TcpPoseSource:
                     self.malformed += 1
         return newest
 
+    def poll_latest_by_hand(self) -> dict[str, PoseEvent]:
+        """The newest event per hand, right now. Never blocks.
+
+        `poll_latest` keeps one event, which is right for one device but starves
+        an arm when two phones stream at once: each poll would keep whichever
+        hand happened to send last and drop the other.
+        """
+        newest: dict[str, PoseEvent] = {}
+        while True:
+            try:
+                chunk = self._sock.recv(65536)
+            except (socket.timeout, BlockingIOError):
+                break
+            except OSError:
+                break
+            if not chunk:
+                self._closed = True
+                break
+            self._buf += chunk
+        while b"\n" in self._buf:
+            line, self._buf = self._buf.split(b"\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = PoseEvent.from_json(json.loads(line))
+                newest[ev.hand] = ev
+                self.received += 1
+            except (ValueError, json.JSONDecodeError):
+                self.malformed += 1
+        return newest
+
+    def send(self, message: dict) -> None:
+        """One JSON line back to the bridge (e.g. {"event": "success"})."""
+        data = (json.dumps(message) + "\n").encode("utf-8")
+        old = self._sock.gettimeout()
+        try:
+            self._sock.settimeout(1.0)
+            self._sock.sendall(data)
+        finally:
+            self._sock.settimeout(old)
+
     @property
     def closed(self) -> bool:
         return self._closed

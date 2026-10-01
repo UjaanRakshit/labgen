@@ -129,6 +129,25 @@ to grip. Completing the task (vial onto the hotplate, released, back onto the
 bench) saves the demo and resets; SAVE DEMO / DISCARD override. Demos are recorded
 already annotated for MimicGen.
 
+**COBALT phone app** ([pairlab/cobalt-mobile-app](https://github.com/pairlab/cobalt-mobile-app),
+installed unchanged). The bridge is the server the app expects, speaking COBALT's
+protocol and using COBALT's YAM phone mapping (`labgen/cobalt_app.py`):
+
+```bash
+python scripts/cobalt_app_bridge.py          # prints the IP to type into the app; sim view on :8000
+$PY scripts/teleop_task.py --input cobalt --task vial --stream --out demos/vial_real.hdf5
+```
+
+Start the bridge, then the sim, then open the app: Settings → IP (printed), port
+8080, task `test`. **Enable Control** engages (6-DoF, the phone's rotation is
+tracked as in COBALT), **Grasp/Release** toggles the gripper, **Reset** discards
+the episode and resets. Completing the task saves the demo and the app is told
+"complete". Bimanual: turn on Bimanual on both phones and give the second one the
+first's Session ID; the first phone drives the right arm, the second the left.
+Watch the sim at `http://<ip>:8000`. Under WSL2 run the bridge on Windows; on
+native Linux, on the sim machine. Without a phone, `python scripts/cobalt_fake_app.py`
+plays the app's side to check the setup.
+
 **MimicGen**, from five or more demos:
 
 ```bash
