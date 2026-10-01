@@ -102,15 +102,22 @@ def test_bridge_end_to_end_with_a_fake_app():
     op, status = read_frame(app)
     assert json.loads(status) == {"type": "status", "data": {"ready": True}}
 
-    send_frame(app, json.dumps({"type": "device data", "data": msg(dpos=[0.03, 0.0, 0.0])}).encode(),
-               mask=True)
-    op, resp = read_frame(app)
-    r = json.loads(resp)
-    assert r["type"] == "response" and json.loads(r["data"]) == {"reset": 0, "complete": 0, "timeout": 0}
+    # Three samples: the bridge ignores the first two after an engage (the app's
+    # stale-last-position jump), so only the third one's motion counts.
+    for _ in range(3):
+        send_frame(app, json.dumps({"type": "device data", "data": msg(dpos=[0.03, 0.0, 0.0])}).encode(),
+                   mask=True)
+        op, resp = read_frame(app)
+        r = json.loads(resp)
+        assert r["type"] == "response" and json.loads(r["data"]) == {"reset": 0, "complete": 0, "timeout": 0}
 
     sim_b.settimeout(5)
-    line = sim_b.recv(65536).split(b"\n")[0]
-    ev = PoseEvent.from_json(json.loads(line))
+    buf = b""
+    while buf.count(b"\n") < 3:
+        buf += sim_b.recv(65536)
+    lines = buf.split(b"\n")[:3]
+    assert np.allclose(PoseEvent.from_json(json.loads(lines[1])).position, 0.0), "first two skipped"
+    ev = PoseEvent.from_json(json.loads(lines[2]))
     assert ev.engaged and ev.hand == "right" and ev.device == "cobalt-app"
     assert np.allclose(ev.position, [-0.02, 0.0, 0.0])          # camera x 0.03 (backward) -> robot -x, /1.5
     assert np.allclose(ev.rotation, PHONE_TO_ROBOT)
