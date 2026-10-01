@@ -49,14 +49,18 @@ ap.add_argument("--host", default="AUTO")
 ap.add_argument("--port", type=int, default=9871)
 ap.add_argument("--stream", action="store_true", help="push JPEG frames to the phone page")
 ap.add_argument("--frame-port", type=int, default=9872)
-ap.add_argument("--view-width", type=int, default=960)
-ap.add_argument("--view-height", type=int, default=540)
+ap.add_argument("--view-width", type=int, default=640)
+ap.add_argument("--view-height", type=int, default=360)
 ap.add_argument("--scale", type=float, default=1.0, help="device-to-hand motion scale")
 ap.add_argument("--out", default="demos/bench.hdf5")
 ap.add_argument("--seconds", type=float, default=0.0, help="stop after this long (0 = never)")
 ap.add_argument("--input", default="touch", choices=("touch", "cobalt"),
                 help="touch: scripts/teleop_touch.py (any phone, drag pad). cobalt: the COBALT "
                      "phone app, unchanged, via scripts/cobalt_app_bridge.py -- 6-DoF, COBALT's mapping")
+ap.add_argument("--rotation", action="store_true",
+                help="cobalt input: also track the phone's rotation (6-DoF, as COBALT). Default: "
+                     "the phone moves the gripper's POSITION and the gripper stays pointing down")
+ap.add_argument("--trace", help="write a per-tick trace (.npz) of phone motion, target and gripper")
 ap.add_argument("--task", default="bench", choices=("bench", "vial"),
                 help="bench: free play. vial: pick the vial, set it on the hotplate, take "
                      "it off -- recorded already annotated for MimicGen, auto-saved on success")
@@ -76,7 +80,23 @@ from labgen_tasks import bench_yam as B  # noqa: E402
 TASKS = {"bench": "Isaac-LabBench-YAM-IK-Rel-v0",
          "vial": "Isaac-LabBench-YAM-VialHotplate-IK-Rel-Mimic-v0"}
 TASK = TASKS[args.task]
-MAX_SPEED_M_S = 0.25            # grasp point speed cap per tick
+MAX_SPEED_M_S = 0.50            # grasp point speed cap per tick
+LEAD_M = 0.08                   # COBALT input: how far the target may run ahead of the arm
+                                # (0.04 dropped 50 of 120 mm on a fast 0.3 s flick)
+# Teleop convenience, not a physical claim: keep the target in a shell the arm can
+# reach, so it is never driven into its own base or past full extension, where
+# the IK folds the arm in ways the operator cannot predict.
+REACH_MIN_M, REACH_MAX_M = 0.18, 0.60      # horizontal distance from that arm's base
+Z_MAX_M = 0.50
+# Where each gripper is parked, pointing down, before the operator takes over:
+# relative to its arm's base. The rig's reset pose puts the grasp point 0.45 m
+# out and 0.33 m up -- nearly stretched for a pointing-down gripper. Measured
+# from there (axis test through the app protocol): a 120 mm forward command
+# moved the gripper 14 mm forward and 50 mm DOWN, "up" pulled it 60-100 mm back,
+# and it held 8 mm off target. A sim convenience; the rig's reset pose is unchanged.
+READY_OFFSET_M = np.array([0.30, 0.0, 0.20])
+READY_TOL_M = 0.008
+LEAD_RAD = 0.35
 MAX_TURN_RAD = 0.10             # per-tick orientation correction cap
 DOWN = np.array([0.0, 0.0, -1.0])
 # Behind and above the two arms, looking forward (+x) -- where the operator stands,
@@ -112,11 +132,13 @@ def screen_frame() -> np.ndarray:
     return np.column_stack([right, fwd, np.array([0.0, 0.0, 1.0])])
 
 
-def aim(viewer) -> None:
+def aim(viewer, eye=None, look=None) -> None:
     """Point the camera (from teleop_sim.aim). Without it the viewer opens
     looking at nothing, which is indistinguishable from a broken renderer."""
-    d = LOOK_AT - EYE
-    viewer.set_camera(tuple(float(v) for v in EYE),
+    eye = EYE if eye is None else np.asarray(eye, float)
+    look = LOOK_AT if look is None else np.asarray(look, float)
+    d = look - eye
+    viewer.set_camera(tuple(float(v) for v in eye),
                       float(np.degrees(np.arctan2(d[2], np.hypot(d[0], d[1])))),
                       float(np.degrees(np.arctan2(d[1], d[0]))))
 
@@ -131,6 +153,20 @@ def track_rotation(R_target: np.ndarray, R_hand: np.ndarray) -> np.ndarray:
     if s < 1e-9:
         return np.zeros(3)
     return v / s * min(ang, MAX_TURN_RAD)
+
+
+def _slerp_toward(R0: np.ndarray, R1: np.ndarray, k: float) -> np.ndarray:
+    """The rotation k of the way from R0 to R1 (0 <= k <= 1), about the shortest axis."""
+    R = R1 @ R0.T
+    c = (np.trace(R) - 1.0) / 2.0
+    v = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]]) / 2.0
+    s = float(np.linalg.norm(v))
+    if s < 1e-9:
+        return R0.copy()
+    ang = float(np.arctan2(s, c)) * k
+    ax = v / s
+    K = np.array([[0, -ax[2], ax[1]], [ax[2], 0, -ax[0]], [-ax[1], ax[0], 0]])
+    return (np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K) @ R0
 
 
 def point_down(R_hand: np.ndarray) -> np.ndarray:
@@ -203,7 +239,11 @@ def main() -> int:
         else:
             ret_kw = dict(position_scale=args.scale, use_orientation=False, frame=screen_frame())
         arms = [dict(ret=RelativeRetargeter(workspace=BENCH_BOX, **ret_kw),
-                     target=None, target_R=None, grip_closed=False, grip=0.0) for _ in range(2)]
+                     target=None, target_R=None, grip_closed=False, grip=0.0,
+                     # COBALT input: phone motion since the last tick, applied to the
+                     # arm where it IS (see below), never integrated into a target.
+                     dev_p=None, dev_R=None, d_p=np.zeros(3), d_R=np.eye(3),
+                     lead_p=None, lead_R=None) for _ in range(2)]
 
         viewer = sock = None
         if args.stream:
@@ -217,10 +257,38 @@ def main() -> int:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             print(f"streaming frames to {host}:{args.frame_port}")
 
+        def go_ready(obs, max_s=4.0):
+            """Park both grippers at READY_OFFSET_M (pointing down) before handing over."""
+            pol_ = obs["policy"]
+            for _ in range(int(max_s * hz)):
+                a_ = torch.zeros(env.action_space.shape, device=u.device)
+                worst = 0.0
+                for i_ in range(2):
+                    base_ = np.asarray(B.ROBOT1_POS if i_ == 1 else (0.0, 0.0, 0.0), float)
+                    p_ = pol_[f"robot{i_}_eef_pos"][0].cpu().numpy()
+                    Rh_ = wxyz_to_R(pol_[f"robot{i_}_eef_quat"][0].cpu().numpy())
+                    Rb_ = wxyz_to_R(pol_[f"robot{i_}_base_ori"][0].cpu().numpy())
+                    e_ = base_ + READY_OFFSET_M - p_
+                    worst = max(worst, float(np.linalg.norm(e_)))
+                    d_ = np.clip(e_, -MAX_SPEED_M_S / hz, MAX_SPEED_M_S / hz)
+                    a_[0, 7 * i_:7 * i_ + 3] = torch.as_tensor(Rb_.T @ d_ / scale)
+                    a_[0, 7 * i_ + 3:7 * i_ + 6] = torch.as_tensor(Rb_.T @ point_down(Rh_) / scale)
+                    a_[0, 7 * i_ + 6] = 1.0
+                obs, *_ = env.step(a_)
+                pol_ = obs["policy"]
+                if worst < READY_TOL_M:
+                    break
+            print(f"   grippers parked at the ready pose ({worst*1000:.0f} mm)", flush=True)
+            return obs
+
+        obs = go_ready(obs)
+        pol = obs["policy"]
         last_cmd_seq, saved, discarded, ticks = None, 0, 0, 0
         started = last_report = time.perf_counter()
         next_tick = started
         step_ms, window = 0.0, 0
+        trace, last_tick_t, period_sum, period_n = [], None, 0.0, 0
+        panes, render_ms = [None, None], 0.0
         print(f"ready at {hz:.0f} Hz. ENGAGE on the phone to drive (RIGHT = right arm/robot0, "
               f"LEFT = left arm/robot1); SAVE DEMO / DISCARD end the episode.")
         try:
@@ -232,6 +300,18 @@ def main() -> int:
 
                 reset = None
                 for ev in events.values():
+                    if args.input == "cobalt":
+                        # Delta control, as COBALT: accumulate the phone's motion since
+                        # the previous tick. The bridge's position is cumulative, so the
+                        # newest event's difference covers every sample since then.
+                        arm_c = arms[HANDS.get(ev.hand, 0)]
+                        if ev.engaged:
+                            if arm_c["dev_p"] is not None:
+                                arm_c["d_p"] = arm_c["d_p"] + (ev.position - arm_c["dev_p"])
+                                arm_c["d_R"] = (ev.rotation @ arm_c["dev_R"].T) @ arm_c["d_R"]
+                            arm_c["dev_p"], arm_c["dev_R"] = ev.position.copy(), ev.rotation.copy()
+                        else:
+                            arm_c["dev_p"] = arm_c["dev_R"] = None
                     if last_cmd_seq is None:
                         last_cmd_seq = ev.command_seq      # ignore presses from before we joined
                     elif ev.command_seq != last_cmd_seq:
@@ -262,6 +342,7 @@ def main() -> int:
                         print(f"discarded episode ({ticks} steps)")
                     rm.reset()
                     obs, _ = env.reset()
+                    obs = go_ready(obs)
                     pol = obs["policy"]
                     for arm in arms:
                         arm["ret"].release()
@@ -270,9 +351,43 @@ def main() -> int:
                     continue
 
                 a = torch.zeros(env.action_space.shape, device=u.device)
+                trace_dp = arms[0]["d_p"].copy()
                 for i, arm in enumerate(arms):
                     Rb = wxyz_to_R(pol[f"robot{i}_base_ori"][0].cpu().numpy())
-                    if arm["target"] is not None:
+                    if args.input == "cobalt":
+                        # The phone's motion moves a target that may lead the arm by at
+                        # most LEAD_M / LEAD_RAD; beyond that it is dropped. Pure
+                        # integration ran 1.8 m out of reach (arm lunged or went dead);
+                        # pure per-tick deltas lost what the soft arm could not do in
+                        # one tick (9.7 cm commanded, 7.8 cm done: "slow and vague").
+                        p = pol[f"robot{i}_eef_pos"][0].cpu().numpy()
+                        Rh = wxyz_to_R(pol[f"robot{i}_eef_quat"][0].cpu().numpy())
+                        if arm["dev_p"] is None:
+                            arm["lead_p"] = arm["lead_R"] = None
+                        else:
+                            if arm["lead_p"] is None:
+                                arm["lead_p"], arm["lead_R"] = p.copy(), Rh.copy()
+                            lp = arm["lead_p"] + arm["d_p"]
+                            lp[2] = min(max(lp[2], BENCH_BOX.lower_m[2]), Z_MAX_M)   # never into the bench
+                            base = np.asarray(B.ROBOT1_POS if i == 1 else (0.0, 0.0, 0.0), float)
+                            h = lp[:2] - base[:2]
+                            r = float(np.linalg.norm(h))
+                            if r > 1e-9 and not (REACH_MIN_M <= r <= REACH_MAX_M):
+                                lp[:2] = base[:2] + h * (min(max(r, REACH_MIN_M), REACH_MAX_M) / r)
+                            off = lp - p
+                            n = float(np.linalg.norm(off))
+                            arm["lead_p"] = p + off * (LEAD_M / n) if n > LEAD_M else lp
+                            lR = arm["d_R"] @ arm["lead_R"]
+                            ang = float(np.arccos(np.clip((np.trace(lR @ Rh.T) - 1) / 2, -1, 1)))
+                            if ang > LEAD_RAD:
+                                lR = _slerp_toward(Rh, lR, LEAD_RAD / ang)
+                            arm["lead_R"] = lR
+                            d = np.clip(arm["lead_p"] - p, -MAX_SPEED_M_S / hz, MAX_SPEED_M_S / hz)
+                            a[0, 7 * i:7 * i + 3] = torch.as_tensor(Rb.T @ d / scale)
+                            rot = track_rotation(lR, Rh) if args.rotation else point_down(Rh)
+                            a[0, 7 * i + 3:7 * i + 6] = torch.as_tensor(Rb.T @ rot / scale)
+                        arm["d_p"], arm["d_R"] = np.zeros(3), np.eye(3)
+                    elif arm["target"] is not None:
                         p = pol[f"robot{i}_eef_pos"][0].cpu().numpy()
                         Rh = wxyz_to_R(pol[f"robot{i}_eef_quat"][0].cpu().numpy())
                         d = np.clip(np.asarray(arm["target"]) - p, -MAX_SPEED_M_S / hz, MAX_SPEED_M_S / hz)
@@ -283,6 +398,17 @@ def main() -> int:
                     # Proportional, like the lab's trigger: slider 0 = open (+1), 1 = closed (-1).
                     a[0, 7 * i + 6] = 1.0 - 2.0 * arm["grip"]
 
+                if args.trace:
+                    trace.append(np.concatenate([[time.perf_counter() - started,
+                                                  float(arms[0]["dev_p"] is not None)],
+                                                 pol["robot0_eef_pos"][0].cpu().numpy(),
+                                                 arms[0]["lead_p"] if arms[0].get("lead_p") is not None
+                                                 else np.full(3, np.nan), trace_dp]))
+                now_t = time.perf_counter()
+                if last_tick_t is not None:
+                    period_sum += now_t - last_tick_t
+                    period_n += 1
+                last_tick_t = now_t
                 t0 = time.perf_counter()
                 obs, _, term, trunc, _ = env.step(a)
                 if bool(term[0]) or bool(trunc[0]):
@@ -294,6 +420,7 @@ def main() -> int:
                         source.send({"event": "success"})     # the COBALT app is told 'complete'
                     except OSError:
                         pass
+                    obs = go_ready(obs)
                     pol = obs["policy"]
                     for arm in arms:
                         arm["ret"].release()
@@ -305,9 +432,19 @@ def main() -> int:
                 pol = obs["policy"]
                 ticks += 1
 
-                if viewer is not None:
+                # Video: ONE view per tick, alternating the whole bench and a close-up
+                # that follows the right gripper; the latest of each goes out side by
+                # side. Two renders every other tick measured the loop at 9 Hz; one
+                # 640x360 render costs ~44 ms here, so it runs every third tick: control
+                # stays near 20 Hz (every other tick measured 16 Hz); each view ~3 Hz.
+                if viewer is not None and ticks % 3 == 0:
                     from isaaclab_newton.physics.newton_manager import NewtonManager as NM
-                    aim(viewer)
+                    k = (ticks // 3) % 2
+                    g = pol["robot0_eef_pos"][0].cpu().numpy() + u.scene.env_origins[0].cpu().numpy()
+                    eye, look = ((EYE, LOOK_AT) if k == 0 else
+                                 (g + np.array([-0.30, 0.0, 0.22]), g + np.array([0.08, 0.0, -0.04])))
+                    t_r = time.perf_counter()
+                    aim(viewer, eye, look)
                     viewer.begin_frame(ticks / hz)
                     viewer.log_state(NM._state_0)
                     viewer.end_frame()
@@ -316,22 +453,37 @@ def main() -> int:
                         arr = f.numpy() if hasattr(f, "numpy") else np.asarray(f)
                         if arr.dtype != np.uint8:
                             arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
+                        panes[k] = arr[:, :, :3]
+                    if panes[0] is not None and panes[1] is not None:
                         buf = io.BytesIO()
-                        Image.fromarray(arr[:, :, :3]).save(buf, format="JPEG", quality=70)
+                        Image.fromarray(np.concatenate(panes, axis=1)).save(buf, format="JPEG", quality=70)
                         jpeg = buf.getvalue()
                         try:
                             sock.sendall(len(jpeg).to_bytes(4, "big") + jpeg)
                         except OSError:
                             print("frame stream closed")
                             viewer = None
+                    render_ms += (time.perf_counter() - t_r) * 1000
 
                 now = time.perf_counter()
                 if now - last_report > 5.0:
-                    live = [f"robot{i}{' ENGAGED' if a_['target'] is not None else ''}"
-                            f"{' GRIP' if a_['grip_closed'] else ''}" for i, a_ in enumerate(arms)]
-                    print(f"   step {step_ms / max(window, 1):5.1f} ms (budget {1000 / hz:.0f}) | "
+                    live = []
+                    for i, a_ in enumerate(arms):
+                        tag = f"robot{i}"
+                        e_now = pol[f"robot{i}_eef_pos"][0].cpu().numpy() * 1000
+                        tag += f" eef ({e_now[0]:.0f},{e_now[1]:.0f},{e_now[2]:.0f}) mm"
+                        if a_.get("dev_p") is not None:
+                            tag += " ENGAGED"
+                        if a_["target"] is not None and args.input != "cobalt":
+                            e = np.asarray(a_["target"]) - pol[f"robot{i}_eef_pos"][0].cpu().numpy()
+                            tag += f" ENGAGED lag {np.linalg.norm(e)*1000:.0f} mm"
+                        live.append(tag + (" GRIP" if a_["grip_closed"] else ""))
+                    rate = period_n / period_sum if period_sum else 0.0
+                    period_sum, period_n = 0.0, 0
+                    print(f"   loop {rate:4.1f} Hz | step {step_ms / max(window, 1):5.1f} ms + render "
+                          f"{render_ms / max(window, 1):5.1f} ms (budget {1000 / hz:.0f}) | "
                           f"{' | '.join(live)} | saved {saved} discarded {discarded}", flush=True)
-                    last_report, step_ms, window = now, 0.0, 0
+                    last_report, step_ms, window, render_ms = now, 0.0, 0, 0.0
                 next_tick += 1.0 / hz
                 sleep = next_tick - time.perf_counter()
                 if sleep > 0:
@@ -343,6 +495,10 @@ def main() -> int:
         finally:
             source.close()
             env.close()
+            if args.trace and trace:
+                np.savez(args.trace, trace=np.array(trace),
+                         columns="t,engaged,eef_x,eef_y,eef_z,lead_x,lead_y,lead_z,dp_x,dp_y,dp_z")
+                print(f"trace: {len(trace)} ticks -> {args.trace}")
     if saved and out.exists():
         stamp(out, saved)
     print(f"done: {saved} demo(s) saved to {out}, {discarded} discarded")

@@ -112,7 +112,7 @@ def test_bridge_end_to_end_with_a_fake_app():
     line = sim_b.recv(65536).split(b"\n")[0]
     ev = PoseEvent.from_json(json.loads(line))
     assert ev.engaged and ev.hand == "right" and ev.device == "cobalt-app"
-    assert np.allclose(ev.position, [-0.02, 0.0, 0.0])          # 0.03 phone x -> -x robot, /1.5
+    assert np.allclose(ev.position, [-0.02, 0.0, 0.0])          # camera x 0.03 (backward) -> robot -x, /1.5
     assert np.allclose(ev.rotation, PHONE_TO_ROBOT)
 
     session.on_success()
@@ -121,3 +121,14 @@ def test_bridge_end_to_end_with_a_fake_app():
     assert json.loads(json.loads(resp)["data"])["complete"] == 1
     app.close()
     srv.close()
+
+
+def test_cobalt_mapping_for_an_operator_behind_the_arms():
+    """Camera frame at engage (phone flat, top toward the robots): x = toward the
+    phone's bottom, y = operator's right, z = up. Right must move the gripper
+    right (robot -y), forward must move it forward (+x)."""
+    from labgen.cobalt_app import PHONE_TO_ROBOT as M
+    assert np.allclose(M @ [0, 1, 0], [0, -1, 0])    # phone right   -> robot right (-y)
+    assert np.allclose(M @ [-1, 0, 0], [1, 0, 0])    # phone forward -> robot forward (+x)
+    assert np.allclose(M @ [0, 0, 1], [0, 0, 1])     # up -> up
+    assert abs(np.linalg.det(M) - 1.0) < 1e-12

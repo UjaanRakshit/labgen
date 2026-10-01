@@ -45,18 +45,23 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np  # noqa: E402
 
-from labgen.cobalt_app import (DeviceState, read_frame, rotation_to_wxyz,  # noqa: E402
+from labgen.cobalt_app import (MAPPINGS, DeviceState, read_frame, rotation_to_wxyz,  # noqa: E402
                                send_frame, server_handshake, to_robot)
 from teleop_touch import Fanout, FrameStore, local_ips, serve_frame_producer  # noqa: E402
 
 HANDS = ("right", "left")        # connection order -> arm, as COBALT indexes devices
+SKIP_AFTER_ENGAGE = 2             # samples ignored after each Enable (see on_message)
+MAX_SAMPLE_M = 0.03               # one 50 ms sample moving more than this is a tracking glitch
 
 
 class Session:
     """One COBALT session: up to two devices, the sim clients, the episode bits."""
 
-    def __init__(self, fan: Fanout):
+    def __init__(self, fan: Fanout, scale: float = 1.0, mapping: str = "cobalt"):
         self.fan = fan
+        self.mapping = mapping
+        self.phone_to_robot = MAPPINGS[mapping]
+        self.scale = scale      # on top of COBALT's 1/1.5; 1.0 = COBALT exactly
         self.lock = threading.Lock()
         self.session_id = uuid.uuid4().hex[:8]
         self.devices: dict[str, dict] = {}        # device_id -> {state, hand, pos, seq}
@@ -71,7 +76,8 @@ class Session:
             device_id = uuid.uuid4().hex[:8]
             hand = HANDS[len(self.devices)]
             self.devices[device_id] = {"state": DeviceState(device_id), "hand": hand,
-                                       "pos": np.zeros(3), "rot": np.eye(3)}
+                                       "pos": np.zeros(3), "rot": np.eye(3),
+                                       "phone_travel": 0.0, "moving": False, "skip": 0}
             return device_id, hand
 
     def leave(self, device_id: str) -> None:
@@ -94,10 +100,21 @@ class Session:
                 d["pos"] = np.zeros(3)
                 print(f"[cobalt] {d['hand']} phone pressed Reset -> discard and reset the sim", flush=True)
             moving = s.engaged and s.valid
-            if moving:
-                dp, R = to_robot(s.dpos, s.rotation)
-                d["pos"] = d["pos"] + dp
+            if moving and not d["moving"]:
+                # The app resets its AR reference on Enable but not its last
+                # position, so its first deltas after each re-engage are a jump of
+                # up to 4 cm (more trips its own too-fast check). Skip them.
+                d["skip"] = SKIP_AFTER_ENGAGE
+            spike = float(np.linalg.norm(s.dpos)) > MAX_SAMPLE_M
+            if moving and (d["skip"] > 0 or spike):
+                d["skip"] = max(0, d["skip"] - 1)
+                d["dropped"] = d.get("dropped", 0) + 1
+            elif moving:
+                dp, R = to_robot(s.dpos, s.rotation, phone_to_robot=self.phone_to_robot)
+                d["pos"] = d["pos"] + dp * self.scale
                 d["rot"] = R
+                d["phone_travel"] += float(np.linalg.norm(s.dpos))
+            d["moving"] = moving
             w, x, y, z = rotation_to_wxyz(d["rot"])
             line = json.dumps({
                 "position": {"x": float(d["pos"][0]), "y": float(d["pos"][1]), "z": float(d["pos"][2])},
@@ -109,6 +126,19 @@ class Session:
             response = d["state"].response()
         self.fan.broadcast(line.encode("utf-8"))
         return response
+
+
+def report(session: Session) -> None:
+    """Every 2 s: how far each phone has travelled, and where that puts the arm."""
+    while True:
+        time.sleep(2.0)
+        with session.lock:
+            for d in session.devices.values():
+                p = d["pos"] * 100
+                print(f"[cobalt] {d['hand']:5s} {'ENGAGED' if d['moving'] else 'idle   '} "
+                      f"phone travelled {d['phone_travel']*100:6.1f} cm total; arm offset "
+                      f"x {p[0]:+6.1f} y {p[1]:+6.1f} z {p[2]:+6.1f} cm (scale {session.scale:g} x 1/1.5)",
+                      flush=True)
 
 
 def serve_app(conn: socket.socket, addr, session: Session, public_ip: str) -> None:
@@ -225,9 +255,16 @@ def main() -> int:
     ap.add_argument("--sim-port", type=int, default=9871)
     ap.add_argument("--frame-port", type=int, default=9872)
     ap.add_argument("--view-port", type=int, default=8000)
+    ap.add_argument("--mapping", default="cobalt", choices=sorted(MAPPINGS),
+                    help="cobalt: COBALT's YAM matrix -- correct for an operator behind the arms, "
+                         "phone flat, screen up, top toward the robots")
+    ap.add_argument("--scale", type=float, default=1.0,
+                    help="extra position gain on top of COBALT's 1/1.5 (1.0 = COBALT exactly)")
     args = ap.parse_args()
 
-    session = Session(Fanout())
+    session = Session(Fanout(), scale=args.scale, mapping=args.mapping)
+    print(f"[cobalt] phone mapping: {args.mapping}, position gain {args.scale:g} x 1/1.5", flush=True)
+    threading.Thread(target=report, args=(session,), daemon=True).start()
     store = FrameStore()
     threading.Thread(target=serve_sims, args=(session, args.sim_port), daemon=True).start()
     threading.Thread(target=serve_frame_producer, args=(store, args.frame_port), daemon=True).start()

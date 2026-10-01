@@ -39,11 +39,54 @@ def connect(host, port):
     return s
 
 
+AXES = [  # (camera-frame direction, seconds to travel 6 cm); each followed by the return
+    ((0.0, 1.0, 0.0), 1.0),     # right
+    ((-1.0, 0.0, 0.0), 1.0),    # forward (toward the phone's top = -x)
+    ((0.0, 0.0, 1.0), 1.0),     # up
+    ((0.0, 1.0, 0.0), 0.3),     # fast right
+]
+
+
+def axes(args) -> int:
+    s = connect(args.host, args.port)
+    for _ in range(2):
+        m = json.loads(read_frame(s)[1])
+        if m["type"] == "status" and not m["data"]["ready"]:
+            raise SystemExit("server not ready")
+    plan = [(0.0, 0.0, 0.0, 1.5)]                      # hold, enabled, 1.5 s
+    for d, secs in AXES:
+        plan += [(*d, secs), (0.0, 0.0, 0.0, 1.0), (-d[0], -d[1], -d[2], secs), (0.0, 0.0, 0.0, 1.0)]
+    n = 0
+    for dx, dy, dz, secs in plan:
+        steps = max(1, round(secs / 0.05))
+        step = [0.06 * c / steps for c in (dx, dy, dz)] if (dx or dy or dz) else [1e-6, 0, 0]
+        if not (dx or dy or dz):
+            secs_steps = round(secs / 0.05)
+            steps = secs_steps
+        for _ in range(steps):
+            payload = {"id": n, "enable": 1, "grasp": 0, "reset": 0, "completion": 0, "timeout": 0,
+                       "valid": 1, "keep_demo_decision": 1, "demo_decision_indicator": 1,
+                       "dpos": step, "timestamp": time.time(), "rotation": [1, 0, 0, 0, 1, 0, 0, 0, 1.0]}
+            send_frame(s, json.dumps({"type": "device data", "data": payload}).encode(), mask=True)
+            read_frame(s)
+            n += 1
+            time.sleep(0.05)
+    print(f"[fake app] axes pattern done, {n} samples", flush=True)
+    s.close()
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--pattern", default="demo", choices=("demo", "axes"),
+                    help="axes: 6 cm right, back, forward, back, up, back (1 s each), then a fast "
+                         "6 cm right in 0.3 s and back -- in the camera frame the app reports "
+                         "(x = toward the phone's bottom, y = right, z = up, phone flat, top forward)")
     args = ap.parse_args()
+    if args.pattern == "axes":
+        return axes(args)
     s = connect(args.host, args.port)
     for _ in range(2):
         op, data = read_frame(s)

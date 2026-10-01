@@ -33,12 +33,23 @@ from dataclasses import dataclass
 
 import numpy as np
 
-__all__ = ["DeviceState", "AppSample", "to_robot", "PHONE_TO_ROBOT", "POSITION_SCALE",
+__all__ = ["DeviceState", "AppSample", "to_robot", "PHONE_TO_ROBOT",
+           "MAPPINGS", "POSITION_SCALE",
            "accept_key", "read_frame", "send_frame", "server_handshake", "rotation_to_wxyz"]
 
 # COBALT robots/yam_robot.py: _phone_to_robot_rotation_global and the 1/1.5 in
 # teleop_to_position_control. This is COBALT's YAM rig, operator stance included.
 PHONE_TO_ROBOT = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]])
+
+# Why this matrix fits an operator standing BEHIND the arms (facing +x): the app
+# reports motion in the AR camera frame at engage, and that frame's x runs along
+# the phone's LONG axis (ARKit/ARCore camera axes are the sensor's landscape
+# axes). Held flat, screen up, top toward the robots: camera x = toward the
+# phone's bottom (backward), y = the operator's right, z = up. So robot +x
+# (forward) = -x, robot +y (the robot's left) = -y, up = up: diag(-1, -1, 1).
+# A "behind" matrix written assuming x = right was tried and was wrong --
+# moving the phone right drove the gripper forward, as reported on the phone.
+MAPPINGS = {"cobalt": PHONE_TO_ROBOT}
 POSITION_SCALE = 1.0 / 1.5
 
 
