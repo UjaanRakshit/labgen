@@ -70,9 +70,11 @@ def _client(port, path="/ws?config=%7B%7D"):
     key = base64.b64encode(b"0123456789abcdef").decode()
     s.sendall((f"GET {path} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
-    buf = b""
-    while b"\r\n\r\n" not in buf:
-        buf += s.recv(1024)
+    buf = b""                        # byte by byte: never swallow the init frame
+    while not buf.endswith(b"\r\n\r\n"):
+        c = s.recv(1)
+        assert c, "closed during the handshake"
+        buf += c
     assert b" 101 " in buf.split(b"\r\n")[0]
     return s
 

@@ -37,8 +37,6 @@ from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
 from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg
 from isaaclab.envs import mdp
-from isaaclab.envs.mdp.actions.actions_cfg import (BinaryJointPositionActionCfg,
-                                                   DifferentialInverseKinematicsActionCfg)
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -337,11 +335,14 @@ class BenchYamIkRelEnvCfg(ManagerBasedRLEnvCfg):
         # physics step. Measured per 20 Hz control step, pick test passing in
         # every case: 5 ms x 4 -> 74 ms, 10 ms x 8 -> 51 ms, 25 ms x 20 -> 38 ms.
         # Solver iterations (100 -> 8) and collision decimation changed nothing.
-        # Decimation 2 -> 20 Hz control, COBALT's YAM control rate.
-        self.decimation = 2
+        # Decimation 1 -> 40 Hz control. Measured with the pick test passing at each:
+        # 20 Hz (x2 steps) 47.7 ms/step, 40 Hz 21.3 ms of a 25 ms budget, 50 Hz
+        # 18.3 ms of 20 (no headroom). 40 Hz leaves room for the teleop loop; the
+        # phone itself samples at 20 Hz and the real rig's loop runs at 100 Hz.
+        self.decimation = 1
         self.episode_length_s = 60.0
         self.sim.dt = 0.025
-        self.sim.render_interval = 2
+        self.sim.render_interval = 1
         # Otherwise Isaac Lab's stack task Newton preset, verbatim except the
         # constraint budget, which two arms and four objects need more of.
         self.sim.physics = NewtonCfg(

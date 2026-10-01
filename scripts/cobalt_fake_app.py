@@ -31,9 +31,14 @@ def connect(host, port):
     from urllib.parse import quote
     s.sendall((f"GET /ws?config={quote(cfg)} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\n"
                f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+    # One byte at a time: the server's first frame can share a segment with the
+    # 101, and a bigger recv would swallow it (the next read then hangs).
     buf = b""
-    while b"\r\n\r\n" not in buf:
-        buf += s.recv(1024)
+    while not buf.endswith(b"\r\n\r\n"):
+        c = s.recv(1)
+        if not c:
+            raise SystemExit("connection closed during the handshake")
+        buf += c
     if b" 101 " not in buf.split(b"\r\n")[0]:
         raise SystemExit(f"handshake refused: {buf[:80]!r}")
     return s
@@ -53,7 +58,7 @@ def axes(args) -> int:
         m = json.loads(read_frame(s)[1])
         if m["type"] == "status" and not m["data"]["ready"]:
             raise SystemExit("server not ready")
-    plan = [(0.0, 0.0, 0.0, 1.5)]                      # hold, enabled, 1.5 s
+    plan = [(0.0, 0.0, 0.0, args.lead_in)]             # hold, enabled, while the sim parks
     for d, secs in AXES:
         plan += [(*d, secs), (0.0, 0.0, 0.0, 1.0), (-d[0], -d[1], -d[2], secs), (0.0, 0.0, 0.0, 1.0)]
     n = 0
@@ -84,6 +89,8 @@ def main() -> int:
                     help="axes: 6 cm right, back, forward, back, up, back (1 s each), then a fast "
                          "6 cm right in 0.3 s and back -- in the camera frame the app reports "
                          "(x = toward the phone's bottom, y = right, z = up, phone flat, top forward)")
+    ap.add_argument("--lead-in", type=float, default=8.0,
+                    help="axes: seconds to hold still first (the sim parks its grippers after connecting)")
     args = ap.parse_args()
     if args.pattern == "axes":
         return axes(args)

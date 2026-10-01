@@ -27,6 +27,7 @@ import argparse
 import io
 import socket
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -80,7 +81,21 @@ from labgen_tasks import bench_yam as B  # noqa: E402
 TASKS = {"bench": "Isaac-LabBench-YAM-IK-Rel-v0",
          "vial": "Isaac-LabBench-YAM-VialHotplate-IK-Rel-Mimic-v0"}
 TASK = TASKS[args.task]
-MAX_SPEED_M_S = 0.50            # grasp point speed cap per tick
+MAX_SPEED_M_S = 0.50            # fastest the target may move, m/s (the phone can be faster)
+# Integral trim on the Cartesian target. The real gains (kp 80) and the fitted
+# joint friction leave the gripper 5-7 mm short of a held target (axis test:
+# lead exact, gripper off by that much). An operator closes that loop by eye; this
+# does it for them. Only while nearly settled (no windup during moves), bounded,
+# reset on every engage. A teleop controller choice; the arm model is unchanged.
+# It integrates only once the target has stayed within TRIM_STILL_BAND_M for
+# TRIM_STILL_S: integrating the lag DURING a move wound it up and overshot every
+# stop by 5-6 mm. Measured with it (axis test, scale 3): holds within 0.3 mm
+# horizontally, 2.2 mm vertically 1 s after the stop.
+TRIM_STILL_S = 0.15
+TRIM_STILL_BAND_M = 0.003
+TRIM_TAU_S = 0.25
+TRIM_NEAR_M = 0.015
+TRIM_MAX_M = 0.012
 LEAD_M = 0.08                   # COBALT input: how far the target may run ahead of the arm
                                 # (0.04 dropped 50 of 120 mm on a fast 0.3 s flick)
 # Teleop convenience, not a physical claim: keep the target in a shell the arm can
@@ -95,9 +110,11 @@ Z_MAX_M = 0.50
 # moved the gripper 14 mm forward and 50 mm DOWN, "up" pulled it 60-100 mm back,
 # and it held 8 mm off target. A sim convenience; the rig's reset pose is unchanged.
 READY_OFFSET_M = np.array([0.30, 0.0, 0.20])
-READY_TOL_M = 0.008
+READY_TOL_M = 0.002             # park this close (with the trim) before handing over
 LEAD_RAD = 0.35
-MAX_TURN_RAD = 0.10             # per-tick orientation correction cap
+MAX_TURN_RAD_S = 2.0            # orientation correction cap, rad/s -- PER SECOND: a per-tick cap
+                                # of 0.1 rad became 10 rad/s at 100 Hz and shook the soft wrist
+MAX_TURN_RAD = MAX_TURN_RAD_S / 20.0   # set per tick from the control rate in main()
 DOWN = np.array([0.0, 0.0, -1.0])
 # Behind and above the two arms, looking forward (+x) -- where the operator stands,
 # so 'drag up the screen' is 'away from me' and the left arm is on the left.
@@ -186,6 +203,73 @@ def stamp(path: Path, n_saved: int) -> None:
         f.attrs["labgen_demos_saved"] = n_saved
 
 
+class RenderWorker(threading.Thread):
+    """Renders the sim view off the control loop.
+
+    One 640x360 render costs ~44 ms here (WSL GL plus readback), more than a
+    40 Hz control tick. Inline, it held the loop at 9-17 Hz. This thread owns
+    its own viewer and state copy, takes the newest body poses whenever the loop
+    publishes them, and renders the overview and a gripper close-up alternately,
+    side by side -- as fast as it can, never blocking control.
+    """
+
+    def __init__(self, model, sock, size, eye, look):
+        super().__init__(daemon=True)
+        self.model, self.sock, self.size = model, sock, size
+        self.eye, self.look = eye, look
+        self._lock = threading.Lock()
+        self._new = threading.Event()
+        self._snap = None
+        self.frames = 0
+        self.alive = True
+
+    def submit(self, body_q: np.ndarray, grip_world: np.ndarray) -> None:
+        with self._lock:
+            self._snap = (body_q, grip_world)
+        self._new.set()
+
+    def run(self) -> None:
+        from newton.viewer import ViewerGL
+        from PIL import Image
+        viewer = ViewerGL(width=self.size[0], height=self.size[1], headless=True, vsync=False)
+        viewer.set_model(self.model)
+        state = self.model.state()
+        panes, k, t = [None, None], 0, 0.0
+        while self.alive:
+            if not self._new.wait(timeout=1.0):
+                continue
+            self._new.clear()
+            with self._lock:
+                bq, g = self._snap
+            state.body_q.assign(bq)
+            eye, look = ((self.eye, self.look) if k == 0 else
+                         (g + np.array([-0.30, 0.0, 0.22]), g + np.array([0.08, 0.0, -0.04])))
+            aim(viewer, eye, look)
+            t += 0.05
+            viewer.begin_frame(t)
+            viewer.log_state(state)
+            viewer.end_frame()
+            f = viewer.get_frame()
+            if f is None:
+                continue
+            arr = f.numpy() if hasattr(f, "numpy") else np.asarray(f)
+            if arr.dtype != np.uint8:
+                arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
+            panes[k] = arr[:, :, :3]
+            k ^= 1
+            if panes[0] is None or panes[1] is None:
+                continue
+            buf = io.BytesIO()
+            Image.fromarray(np.concatenate(panes, axis=1)).save(buf, format="JPEG", quality=70)
+            jpeg = buf.getvalue()
+            try:
+                self.sock.sendall(len(jpeg).to_bytes(4, "big") + jpeg)
+                self.frames += 1
+            except OSError:
+                print("frame stream closed", flush=True)
+                return
+
+
 def main() -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -223,6 +307,8 @@ def main() -> int:
         env = gym.make(TASK, cfg=cfg)
         u = env.unwrapped
         hz = 1.0 / (cfg.sim.dt * cfg.decimation)
+        global MAX_TURN_RAD
+        MAX_TURN_RAD = MAX_TURN_RAD_S / hz
         scale = cfg.actions.robot0_arm.scale
         obs, _ = env.reset()
         pol = obs["policy"]
@@ -245,22 +331,20 @@ def main() -> int:
                      dev_p=None, dev_R=None, d_p=np.zeros(3), d_R=np.eye(3),
                      lead_p=None, lead_R=None) for _ in range(2)]
 
-        viewer = sock = None
+        renderer = None
         if args.stream:
-            from newton.viewer import ViewerGL
-            from PIL import Image
             from isaaclab_newton.physics.newton_manager import NewtonManager as NM
-            viewer = ViewerGL(width=args.view_width, height=args.view_height,
-                              headless=True, vsync=False)
-            viewer.set_model(NM._model)
             sock = socket.create_connection((host, args.frame_port), timeout=10.0)
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            print(f"streaming frames to {host}:{args.frame_port}")
+            renderer = RenderWorker(NM._model, sock, (args.view_width, args.view_height), EYE, LOOK_AT)
+            renderer.start()
+            print(f"streaming frames to {host}:{args.frame_port} (render thread)")
 
-        def go_ready(obs, max_s=4.0):
+        def go_ready(obs, max_s=6.0):
             """Park both grippers at READY_OFFSET_M (pointing down) before handing over."""
             pol_ = obs["policy"]
-            for _ in range(int(max_s * hz)):
+            sps, trims, k_ = [None, None], [np.zeros(3), np.zeros(3)], 0
+            for k_ in range(int(max_s * hz)):
                 a_ = torch.zeros(env.action_space.shape, device=u.device)
                 worst = 0.0
                 for i_ in range(2):
@@ -270,7 +354,17 @@ def main() -> int:
                     Rb_ = wxyz_to_R(pol_[f"robot{i_}_base_ori"][0].cpu().numpy())
                     e_ = base_ + READY_OFFSET_M - p_
                     worst = max(worst, float(np.linalg.norm(e_)))
-                    d_ = np.clip(e_, -MAX_SPEED_M_S / hz, MAX_SPEED_M_S / hz)
+                    if sps[i_] is None:
+                        sps[i_] = p_.copy()
+                    g_ = base_ + READY_OFFSET_M - sps[i_]
+                    gn = float(np.linalg.norm(g_))
+                    sps[i_] = sps[i_] + (g_ if gn <= 0.25 / hz else g_ * (0.25 / hz / gn))
+                    if gn <= 0.25 / hz and float(np.linalg.norm(e_)) < TRIM_NEAR_M:   # arrived: trim
+                        trims[i_] = trims[i_] + e_ / (TRIM_TAU_S * hz)
+                        tn_ = float(np.linalg.norm(trims[i_]))
+                        if tn_ > TRIM_MAX_M:
+                            trims[i_] = trims[i_] * (TRIM_MAX_M / tn_)
+                    d_ = sps[i_] - p_ + trims[i_]
                     a_[0, 7 * i_:7 * i_ + 3] = torch.as_tensor(Rb_.T @ d_ / scale)
                     a_[0, 7 * i_ + 3:7 * i_ + 6] = torch.as_tensor(Rb_.T @ point_down(Rh_) / scale)
                     a_[0, 7 * i_ + 6] = 1.0
@@ -278,7 +372,7 @@ def main() -> int:
                 pol_ = obs["policy"]
                 if worst < READY_TOL_M:
                     break
-            print(f"   grippers parked at the ready pose ({worst*1000:.0f} mm)", flush=True)
+            print(f"   grippers parked at the ready pose ({worst*1000:.1f} mm, {(k_ + 1) / hz:.1f} s)", flush=True)
             return obs
 
         obs = go_ready(obs)
@@ -288,7 +382,7 @@ def main() -> int:
         next_tick = started
         step_ms, window = 0.0, 0
         trace, last_tick_t, period_sum, period_n = [], None, 0.0, 0
-        panes, render_ms = [None, None], 0.0
+        render_ms = 0.0
         print(f"ready at {hz:.0f} Hz. ENGAGE on the phone to drive (RIGHT = right arm/robot0, "
               f"LEFT = left arm/robot1); SAVE DEMO / DISCARD end the episode.")
         try:
@@ -364,10 +458,25 @@ def main() -> int:
                         Rh = wxyz_to_R(pol[f"robot{i}_eef_quat"][0].cpu().numpy())
                         if arm["dev_p"] is None:
                             arm["lead_p"] = arm["lead_R"] = None
+                            arm["trim"], arm["still"], arm["anchor"] = np.zeros(3), 0, None
+                            arm["backlog"] = np.zeros(3)
                         else:
                             if arm["lead_p"] is None:
                                 arm["lead_p"], arm["lead_R"] = p.copy(), Rh.copy()
-                            lp = arm["lead_p"] + arm["d_p"]
+                            # Phone motion goes into a backlog that feeds the target at
+                            # up to MAX_SPEED; the rest carries to the next tick. The phone
+                            # samples at 20 Hz against a 40 Hz loop, so its motion arrives
+                            # as 2-tick jumps: clipping without carry-over dropped 45 of
+                            # 120 mm on a fast flick. Backlog bounded by LEAD_M (no windup).
+                            arm["backlog"] = arm.get("backlog", np.zeros(3)) + arm["d_p"]
+                            bn = float(np.linalg.norm(arm["backlog"]))
+                            if bn > LEAD_M:
+                                arm["backlog"] = arm["backlog"] * (LEAD_M / bn)
+                                bn = LEAD_M
+                            cap = MAX_SPEED_M_S / hz
+                            step_p = arm["backlog"] if bn <= cap else arm["backlog"] * (cap / bn)
+                            arm["backlog"] = arm["backlog"] - step_p
+                            lp = arm["lead_p"] + step_p
                             lp[2] = min(max(lp[2], BENCH_BOX.lower_m[2]), Z_MAX_M)   # never into the bench
                             base = np.asarray(B.ROBOT1_POS if i == 1 else (0.0, 0.0, 0.0), float)
                             h = lp[:2] - base[:2]
@@ -377,12 +486,30 @@ def main() -> int:
                             off = lp - p
                             n = float(np.linalg.norm(off))
                             arm["lead_p"] = p + off * (LEAD_M / n) if n > LEAD_M else lp
+                            # Still = the target stayed within TRIM_STILL_BAND_M (a held
+                            # phone jitters; an exact-zero test would never fire).
+                            anc = arm.get("anchor")
+                            if anc is None or float(np.linalg.norm(arm["lead_p"] - anc)) > TRIM_STILL_BAND_M:
+                                arm["anchor"], arm["still"] = arm["lead_p"].copy(), 0
+                            else:
+                                arm["still"] = arm.get("still", 0) + 1
                             lR = arm["d_R"] @ arm["lead_R"]
                             ang = float(np.arccos(np.clip((np.trace(lR @ Rh.T) - 1) / 2, -1, 1)))
                             if ang > LEAD_RAD:
                                 lR = _slerp_toward(Rh, lR, LEAD_RAD / ang)
                             arm["lead_R"] = lR
-                            d = np.clip(arm["lead_p"] - p, -MAX_SPEED_M_S / hz, MAX_SPEED_M_S / hz)
+                            # The full gap to the lead (bounded by LEAD_M), not a per-tick
+                            # step: a vmax/hz clip stalls the soft arm at high control rates.
+                            d = arm["lead_p"] - p
+                            trim = arm.get("trim", np.zeros(3))
+                            if (float(np.linalg.norm(d)) < TRIM_NEAR_M
+                                    and arm.get("still", 0) >= TRIM_STILL_S * hz):
+                                trim = trim + d / (TRIM_TAU_S * hz)
+                                tn = float(np.linalg.norm(trim))
+                                if tn > TRIM_MAX_M:
+                                    trim = trim * (TRIM_MAX_M / tn)
+                            arm["trim"] = trim
+                            d = d + trim
                             a[0, 7 * i:7 * i + 3] = torch.as_tensor(Rb.T @ d / scale)
                             rot = track_rotation(lR, Rh) if args.rotation else point_down(Rh)
                             a[0, 7 * i + 3:7 * i + 6] = torch.as_tensor(Rb.T @ rot / scale)
@@ -412,14 +539,19 @@ def main() -> int:
                 t0 = time.perf_counter()
                 obs, _, term, trunc, _ = env.step(a)
                 if bool(term[0]) or bool(trunc[0]):
-                    # The task's success check fired: the env has already
-                    # exported the episode and reset itself.
-                    saved += 1
-                    print(f"SUCCESS -> demo {saved} saved automatically ({ticks} steps) -> {out}")
-                    try:
-                        source.send({"event": "success"})     # the COBALT app is told 'complete'
-                    except OSError:
-                        pass
+                    # The env has reset itself. Only a termination is the success
+                    # check (time_out is off above and the recorder exports
+                    # successes only); a truncation saved nothing, so say so.
+                    if bool(term[0]):
+                        saved += 1
+                        print(f"SUCCESS -> demo {saved} saved automatically ({ticks} steps) -> {out}")
+                        try:
+                            source.send({"event": "success"})     # the COBALT app is told 'complete'
+                        except OSError:
+                            pass
+                    else:
+                        discarded += 1
+                        print(f"episode truncated after {ticks} steps -> not saved")
                     obs = go_ready(obs)
                     pol = obs["policy"]
                     for arm in arms:
@@ -432,37 +564,13 @@ def main() -> int:
                 pol = obs["policy"]
                 ticks += 1
 
-                # Video: ONE view per tick, alternating the whole bench and a close-up
-                # that follows the right gripper; the latest of each goes out side by
-                # side. Two renders every other tick measured the loop at 9 Hz; one
-                # 640x360 render costs ~44 ms here, so it runs every third tick: control
-                # stays near 20 Hz (every other tick measured 16 Hz); each view ~3 Hz.
-                if viewer is not None and ticks % 3 == 0:
+                # Video: hand the newest poses to the render thread (cheap); it
+                # renders at its own pace and never blocks this loop.
+                if renderer is not None and ticks % 2 == 0:
                     from isaaclab_newton.physics.newton_manager import NewtonManager as NM
-                    k = (ticks // 3) % 2
-                    g = pol["robot0_eef_pos"][0].cpu().numpy() + u.scene.env_origins[0].cpu().numpy()
-                    eye, look = ((EYE, LOOK_AT) if k == 0 else
-                                 (g + np.array([-0.30, 0.0, 0.22]), g + np.array([0.08, 0.0, -0.04])))
                     t_r = time.perf_counter()
-                    aim(viewer, eye, look)
-                    viewer.begin_frame(ticks / hz)
-                    viewer.log_state(NM._state_0)
-                    viewer.end_frame()
-                    f = viewer.get_frame()
-                    if f is not None:
-                        arr = f.numpy() if hasattr(f, "numpy") else np.asarray(f)
-                        if arr.dtype != np.uint8:
-                            arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
-                        panes[k] = arr[:, :, :3]
-                    if panes[0] is not None and panes[1] is not None:
-                        buf = io.BytesIO()
-                        Image.fromarray(np.concatenate(panes, axis=1)).save(buf, format="JPEG", quality=70)
-                        jpeg = buf.getvalue()
-                        try:
-                            sock.sendall(len(jpeg).to_bytes(4, "big") + jpeg)
-                        except OSError:
-                            print("frame stream closed")
-                            viewer = None
+                    g = pol["robot0_eef_pos"][0].cpu().numpy() + u.scene.env_origins[0].cpu().numpy()
+                    renderer.submit(NM._state_0.body_q.numpy().copy(), g)
                     render_ms += (time.perf_counter() - t_r) * 1000
 
                 now = time.perf_counter()
@@ -481,7 +589,8 @@ def main() -> int:
                     rate = period_n / period_sum if period_sum else 0.0
                     period_sum, period_n = 0.0, 0
                     print(f"   loop {rate:4.1f} Hz | step {step_ms / max(window, 1):5.1f} ms + render "
-                          f"{render_ms / max(window, 1):5.1f} ms (budget {1000 / hz:.0f}) | "
+                          f"{render_ms / max(window, 1):5.1f} ms (budget {1000 / hz:.0f}) | video "
+                          f"{(renderer.frames if renderer else 0)} frames | "
                           f"{' | '.join(live)} | saved {saved} discarded {discarded}", flush=True)
                     last_report, step_ms, window, render_ms = now, 0.0, 0, 0.0
                 next_tick += 1.0 / hz
@@ -493,6 +602,8 @@ def main() -> int:
         except KeyboardInterrupt:
             print("\nstopped by operator")
         finally:
+            if renderer is not None:
+                renderer.alive = False
             source.close()
             env.close()
             if args.trace and trace:

@@ -133,17 +133,28 @@ def main() -> int:
         down = torch.tensor([0.0, 0.0, -1.0])
 
         def servo(target, grip, seconds, vmax=0.25, tol=None):
-            """Move the grasp point toward `target` with the gripper pointing down."""
+            """Move the grasp point toward `target` with the gripper pointing down.
+
+            A setpoint advances toward the target at `vmax`; each tick commands the FULL gap
+            from the gripper to that setpoint. Clipping each tick's command to vmax/hz
+            instead (the first version) stalled the soft arm at high control rates: at
+            50 Hz a 1.6 mm step gives kp 80 almost no torque, and the arm never lifted
+            the beaker. This is also how the lab teleop drives the real arm: an
+            absolute target, speed set by the joint rate limit.
+            """
             nonlocal obs, pol
+            sp = pol["robot0_eef_pos"][0].cpu().clone()
+            tgt = torch.tensor(target, dtype=sp.dtype)
             for _ in range(int(seconds * steps_per_s)):
                 p = pol["robot0_eef_pos"][0].cpu()
                 R = quat_wxyz_to_R(pol["robot0_eef_quat"][0].cpu())
-                err = torch.tensor(target) - p
-                step = err.clamp(-vmax / steps_per_s, vmax / steps_per_s)
+                err = tgt - p
+                sp = sp + (tgt - sp).clamp(-vmax / steps_per_s, vmax / steps_per_s)
+                step = sp - p
                 z = R[:, 2]
                 axis = torch.linalg.cross(z, down)
                 ang = math.atan2(float(axis.norm()), float(z @ down))
-                rot = (axis / axis.norm() * min(ang, 0.1)) if axis.norm() > 1e-6 else torch.zeros(3)
+                rot = (axis / axis.norm() * min(ang, 2.0 / steps_per_s)) if axis.norm() > 1e-6 else torch.zeros(3)  # 2 rad/s, any rate
                 obs, *_ = env.step(act(step.tolist(), rot.tolist(), grip))
                 pol = obs["policy"]
                 if tol is not None and float(err.norm()) < tol and ang < math.radians(2):

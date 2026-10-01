@@ -134,19 +134,32 @@ installed unchanged). The bridge is the server the app expects, speaking COBALT'
 protocol and using COBALT's YAM phone mapping (`labgen/cobalt_app.py`):
 
 ```bash
-python scripts/cobalt_app_bridge.py          # prints the IP to type into the app; sim view on :8000
+python scripts/cobalt_app_bridge.py --scale 3   # prints the IP to type into the app; sim view on :8000
 $PY scripts/teleop_task.py --input cobalt --task vial --stream --out demos/vial_real.hdf5
 ```
 
 Start the bridge, then the sim, then open the app: Settings → IP (printed), port
-8080, task `test`. **Enable Control** engages (6-DoF, the phone's rotation is
-tracked as in COBALT), **Grasp/Release** toggles the gripper, **Reset** discards
-the episode and resets. Completing the task saves the demo and the app is told
-"complete". Bimanual: turn on Bimanual on both phones and give the second one the
-first's Session ID; the first phone drives the right arm, the second the left.
-Watch the sim at `http://<ip>:8000`. Under WSL2 run the bridge on Windows; on
-native Linux, on the sim machine. Without a phone, `python scripts/cobalt_fake_app.py`
-plays the app's side to check the setup.
+8080, task `test`. Hold the phone flat, screen up, top pointing at the robots, and
+stand behind the arms: the phone's motion moves the gripper the same way (COBALT's
+YAM mapping). `--scale 1` is COBALT's own gain (1/1.5); 3 gives the full bench from
+a comfortable hand range. **Enable Control** engages, **Grasp/Release** toggles the
+gripper, **Reset** discards the episode and resets. The gripper stays pointing down
+unless the sim runs with `--rotation` (then the phone's rotation is tracked, as in
+COBALT). After every reset both grippers park at a ready pose 0.30 m out and 0.20 m
+up, pointing down, before control is handed over. Completing the task saves the
+demo and the app is told "complete". Bimanual: turn on Bimanual on both phones and
+give the second one the first's Session ID; the first phone drives the right arm,
+the second the left. Watch the sim at `http://<ip>:8000`: the whole bench on the
+left, a close-up following the right gripper on the right. Under WSL2 run the
+bridge on Windows; on native Linux, on the sim machine.
+
+The task runs at 40 Hz control (the phone samples at 20 Hz; the real rig's loop
+runs at 100 Hz). Measured with `python scripts/cobalt_fake_app.py --pattern axes`
+(the app's protocol, 6 cm phone moves at scale 3) and the sim's `--trace`: every
+held position lands within 0.3 mm of the command horizontally and 2.2 mm
+vertically (x, 1 s after the stop); a 120 mm flick in 0.3 s arrives in full;
+overshoot 1-6 mm, off-axis excursion up to 11 mm during vertical moves. Without a
+phone, `cobalt_fake_app.py` plays the app's side to check the setup.
 
 **MimicGen**, from five or more demos:
 

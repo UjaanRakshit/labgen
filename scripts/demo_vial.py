@@ -84,18 +84,29 @@ def main() -> int:
             return pol()[f"{name}_pose"][0, :3].cpu()
 
         def servo(target, grip, seconds, vmax=0.15, tol=0.002, dwell=False):
-            """Move toward target; `dwell` holds for the full time (jaw open/close)."""
+            """Move toward target; `dwell` holds for the full time (jaw open/close).
+
+            A setpoint advances toward the target at `vmax`; each tick commands the FULL gap
+            from the gripper to that setpoint. Clipping each tick's command to vmax/hz
+            instead (the first version) stalled the soft arm at high control rates: at
+            50 Hz a 1.6 mm step gives kp 80 almost no torque, and the arm never lifted
+            the beaker. This is also how the lab teleop drives the real arm: an
+            absolute target, speed set by the joint rate limit.
+            """
+            sp = pol()["robot0_eef_pos"][0].cpu().clone()
+            tgt = torch.tensor(target, dtype=torch.float32)
             for _ in range(int(seconds * hz)):
                 if state["done"]:
                     return 0.0
                 p = pol()["robot0_eef_pos"][0].cpu()
                 R = wxyz_to_R(pol()["robot0_eef_quat"][0].cpu().tolist())
-                err = torch.tensor(target, dtype=torch.float32) - p
-                step = err.clamp(-vmax / hz, vmax / hz)
+                err = tgt - p
+                sp = sp + (tgt - sp).clamp(-vmax / hz, vmax / hz)
+                step = sp - p
                 z = R[:, 2]
                 axis = torch.linalg.cross(z, DOWN)
                 ang = math.atan2(float(axis.norm()), float(z @ DOWN))
-                rot = axis / axis.norm() * min(ang, 0.1) if axis.norm() > 1e-6 else torch.zeros(3)
+                rot = axis / axis.norm() * min(ang, 2.0 / hz) if axis.norm() > 1e-6 else torch.zeros(3)  # 2 rad/s, any rate
                 a = torch.zeros(env.action_space.shape, device=u.device)
                 a[0, 0:3] = step.to(u.device) / scale
                 a[0, 3:6] = rot.to(u.device) / scale
