@@ -52,6 +52,10 @@ ap.add_argument("--stream", action="store_true", help="push JPEG frames to the p
 ap.add_argument("--frame-port", type=int, default=9872)
 ap.add_argument("--view-width", type=int, default=640)
 ap.add_argument("--view-height", type=int, default=360)
+ap.add_argument("--view-fps", type=float, default=24.0,
+                help="renders per second, the two views alternating. Rendering shares the GPU with "
+                     "the physics (WSL translates GL to D3D12). Measured, vial task under WSL: 24/s "
+                     "-> 38 Hz control, 12/s -> 39 Hz, 1/s -> 40 Hz; frame size barely matters")
 ap.add_argument("--scale", type=float, default=1.0, help="device-to-hand motion scale")
 ap.add_argument("--out", default="demos/bench.hdf5")
 ap.add_argument("--seconds", type=float, default=0.0, help="stop after this long (0 = never)")
@@ -213,8 +217,9 @@ class RenderWorker(threading.Thread):
     side by side -- as fast as it can, never blocking control.
     """
 
-    def __init__(self, model, sock, size, eye, look):
+    def __init__(self, model, sock, size, eye, look, fps):
         super().__init__(daemon=True)
+        self.period = 1.0 / fps
         self.model, self.sock, self.size = model, sock, size
         self.eye, self.look = eye, look
         self._lock = threading.Lock()
@@ -235,7 +240,12 @@ class RenderWorker(threading.Thread):
         viewer.set_model(self.model)
         state = self.model.state()
         panes, k, t = [None, None], 0, 0.0
+        next_t = time.perf_counter()
         while self.alive:
+            wait = next_t - time.perf_counter()
+            if wait > 0:
+                time.sleep(wait)
+            next_t = max(next_t + self.period, time.perf_counter())
             if not self._new.wait(timeout=1.0):
                 continue
             self._new.clear()
@@ -336,7 +346,8 @@ def main() -> int:
             from isaaclab_newton.physics.newton_manager import NewtonManager as NM
             sock = socket.create_connection((host, args.frame_port), timeout=10.0)
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            renderer = RenderWorker(NM._model, sock, (args.view_width, args.view_height), EYE, LOOK_AT)
+            renderer = RenderWorker(NM._model, sock, (args.view_width, args.view_height), EYE, LOOK_AT,
+                                    args.view_fps)
             renderer.start()
             print(f"streaming frames to {host}:{args.frame_port} (render thread)")
 

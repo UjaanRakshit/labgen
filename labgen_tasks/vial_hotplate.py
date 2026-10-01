@@ -90,8 +90,7 @@ def _jaw(env):
 
 def vial_grasped(env) -> torch.Tensor:
     vp, vq = _pose(env, "vial")
-    body = vp + PoseUtils.quat_apply(vq, torch.tensor([0.0, 0.0, VIAL_GRASP_Z],
-                                                      device=vp.device).expand_as(vp))
+    body = vp + PoseUtils.quat_apply(vq, B.device_const((0.0, 0.0, VIAL_GRASP_Z), vp.device).expand_as(vp))
     near = (B._grasp_pose(env, "robot0")[0] - body).norm(dim=-1) < NEAR_M
     q = _jaw(env)
     return near & (q > HOLD_Q[0]) & (q < HOLD_Q[1])

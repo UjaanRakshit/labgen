@@ -196,12 +196,26 @@ def _xyzw_to_wxyz(q: torch.Tensor) -> torch.Tensor:
     return torch.cat((q[..., 3:4], q[..., 0:3]), dim=-1)
 
 
+_CONST: dict = {}
+
+
+def device_const(values, device) -> torch.Tensor:
+    """A constant tensor, built once per device. torch.tensor(..., device=cuda)
+    is a host-to-device copy that waits behind all queued GPU work: called 18
+    times a step from the observation terms, it was that many full syncs."""
+    key = (tuple(values), str(device))
+    t = _CONST.get(key)
+    if t is None:
+        t = _CONST[key] = torch.tensor(values, dtype=torch.float32, device=device)
+    return t
+
+
 def _grasp_pose(env: ManagerBasedRLEnv, robot: str):
     art = env.scene[robot]
     b = art.body_names.index("gripper")
     pos = art.data.body_pos_w.torch[:, b]
     quat = art.data.body_quat_w.torch[:, b]
-    off = torch.tensor(GRASP_OFFSET_M, device=pos.device).expand_as(pos)
+    off = device_const(GRASP_OFFSET_M, pos.device).expand_as(pos)
     return pos + math_utils.quat_apply(quat, off) - env.scene.env_origins, quat
 
 
